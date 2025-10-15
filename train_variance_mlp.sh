@@ -2,7 +2,7 @@ datapath=/home/maometus/Documents/datasets/mvtec_anomaly_detection
 datasets=('screw' 'pill' 'capsule' 'carpet' 'grid' 'tile' 'wood' 'zipper' 'cable' 'toothbrush' 'transistor' 'metal_nut' 'bottle' 'hazelnut' 'leather')
 dataset_flags=($(for dataset in "${datasets[@]}"; do echo '-d '"${dataset}"; done))
 
-python3 main.py \
+python3 variance_mlp.py \
 --gpu 0 \
 --seed 0 \
 --log_group simplenet_mvtec \
