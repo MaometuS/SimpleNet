@@ -205,7 +205,6 @@ class ForwardHook:
         #     raise LastLayerToExtractReachedException()
         return None
 
-
 class LastLayerToExtractReachedException(Exception):
     pass
 
