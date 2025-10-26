@@ -385,7 +385,7 @@ def run(
                 num_batches += 1
 
             print(f"{dataset_name}: Epoch {epoch + 1} | Loss: {total_loss / num_batches:.60f}")
-        os.makedirs(dataset_name, exist_ok=True)
+        os.makedirs("variance_mlp", exist_ok=True)
         torch.save(model.state_dict(), f"variance_mlp/{dataset_name}_variance_mlp_25.pth")
 
         all_patches = []
