@@ -5,6 +5,7 @@ import torch
 import logging
 import math
 import common
+import os
 import utils
 import backbones
 import click
@@ -383,8 +384,9 @@ def run(
                 total_loss += loss.item()
                 num_batches += 1
 
-            print(f"${dataset_name}: Epoch {epoch + 1} | Loss: {total_loss / num_batches:.60f}")
-        torch.save(model.state_dict(), f"variance_mlp/${dataset_name}_variance_mlp_25.pth")
+            print(f"{dataset_name}: Epoch {epoch + 1} | Loss: {total_loss / num_batches:.60f}")
+        os.makedirs(dataset_name, exist_ok=True)
+        torch.save(model.state_dict(), f"variance_mlp/{dataset_name}_variance_mlp_25.pth")
 
         all_patches = []
         all_patches_mean = []
@@ -413,7 +415,7 @@ def run(
             total_loss += loss.item()
             num_batches += 1
 
-        print(f"${dataset_name} K: 25, Validation Loss: {total_loss / num_batches:.60f}")
+        print(f"{dataset_name} K: 25, Validation Loss: {total_loss / num_batches:.60f}")
 
     # for epoch in range(10):
     #     model.train()
