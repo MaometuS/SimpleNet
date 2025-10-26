@@ -208,9 +208,13 @@ class SimpleNet(torch.nn.Module):
         self.variance_mlp.load_state_dict(torch.load("variance_mlp_25.pth"))
         self.variance_mlp.eval()
 
-    def set_model_dir(self, model_dir, dataset_name):
+    def load_variance_mlp(self, dataset_name):
+        self.variance_mlp = VarianceMLP().to(self.device)
+        self.variance_mlp.load_state_dict(torch.load(f"variance_mlp/{dataset_name}_variance_mlp_25.pth"))
+        self.variance_mlp.eval()
 
-        self.model_dir = model_dir 
+    def set_model_dir(self, model_dir, dataset_name):
+        self.model_dir = model_dir
         os.makedirs(self.model_dir, exist_ok=True)
         self.ckpt_dir = os.path.join(self.model_dir, dataset_name)
         os.makedirs(self.ckpt_dir, exist_ok=True)
@@ -490,20 +494,20 @@ class SimpleNet(torch.nn.Module):
                     else:
                         true_feats = self._embed(img, evaluation=False)[0]
 
-                    # debatched_true_feats = true_feats.reshape(8, -1, true_feats.shape[1])
-                    # with torch.no_grad():
-                    #    predicted_var = self.variance_mlp(debatched_true_feats)
-                    # std = torch.clamp(torch.sqrt(predicted_var + 1e-6), max=10.0)
-                    # noise = torch.randn_like(debatched_true_feats) * (std.unsqueeze(1) * 1.1)
-                    # fake_feats = (debatched_true_feats + noise).reshape(true_feats.shape)
+                    debatched_true_feats = true_feats.reshape(8, -1, true_feats.shape[1])
+                    with torch.no_grad():
+                       predicted_var = self.variance_mlp(debatched_true_feats)
+                    std = torch.clamp(torch.sqrt(predicted_var + 1e-6), max=10.0)
+                    noise = torch.randn_like(debatched_true_feats) * (std.unsqueeze(1) * 1.2)
+                    fake_feats = (debatched_true_feats + noise).reshape(true_feats.shape)
 
-                    noise_idxs = torch.randint(0, self.mix_noise, torch.Size([true_feats.shape[0]]))
-                    noise_one_hot = torch.nn.functional.one_hot(noise_idxs, num_classes=self.mix_noise).to(self.device) # (N, K)
-                    noise = torch.stack([
-                        torch.normal(0, self.noise_std * 1.1**(k), true_feats.shape)
-                        for k in range(self.mix_noise)], dim=1).to(self.device) # (N, K, C)
-                    noise = (noise * noise_one_hot.unsqueeze(-1)).sum(1)
-                    fake_feats = true_feats + noise
+                    # noise_idxs = torch.randint(0, self.mix_noise, torch.Size([true_feats.shape[0]]))
+                    # noise_one_hot = torch.nn.functional.one_hot(noise_idxs, num_classes=self.mix_noise).to(self.device) # (N, K)
+                    # noise = torch.stack([
+                    #     torch.normal(0, self.noise_std * 1.1**(k), true_feats.shape)
+                    #     for k in range(self.mix_noise)], dim=1).to(self.device) # (N, K, C)
+                    # noise = (noise * noise_one_hot.unsqueeze(-1)).sum(1)
+                    # fake_feats = true_feats + noise
 
                     scores = self.discriminator(torch.cat([true_feats, fake_feats]))
                     true_scores = scores[:len(true_feats)]
