@@ -339,112 +339,40 @@ def run(
 
     utils.fix_seeds(seed)
 
-    for dataloaders_count, dataloaders in enumerate(list_of_dataloaders):
-        model = VarianceMLP().to(device)
-        optimizer = torch.optim.Adam(model.parameters(), lr=1e-4, weight_decay=1e-5)
-        loss_fn = nn.MSELoss()
-
-        dataset_name = dataloaders["training"].name
-        imagesize = dataloaders["training"].dataset.imagesize
-
-        embedder: simplenet.SimpleNet = methods["get_simplenet"](imagesize, device)[0]
-
-        #Extracting target variances
-        all_patches = []
-        all_patches_mean = []
-
-        for data in dataloaders["training"]:
-            with torch.no_grad():
-                embedding = embedder.embed(data["image"].to(device))[0]
-            embedding = embedding.reshape(len(data["image"]), -1, embedding.shape[1])
-            all_patches.append(embedding.cpu())
-            all_patches_mean.append(embedding.mean(dim=1))
-
-        all_patches = torch.cat(all_patches, dim=0)
-        all_patches_mean = torch.cat(all_patches_mean, dim=0)
-        target_variances = generate_knn_target_variances_rep(all_patches_mean, 25).cpu()
-        all_patches_mean = []
-
-        dset = VarianceTrainSet(all_patches, target_variances)
-        loader = torch.utils.data.DataLoader(dset, batch_size=50, shuffle=False, pin_memory=True, num_workers=2)
-
-        #training the model on target variances
-        model.train()
-        for epoch in range(10):
-            total_loss = 0
-            num_batches = 0
-
-            for patches, targets in loader:
-                optimizer.zero_grad()
-                preds = model(patches.to(device))
-                loss = loss_fn(preds, targets.to(device))
-                loss.backward()
-                optimizer.step()
-
-                total_loss += loss.item()
-                num_batches += 1
-
-            print(f"{dataset_name}: Epoch {epoch + 1} | Loss: {total_loss / num_batches:.60f}")
-        os.makedirs("variance_mlp", exist_ok=True)
-        torch.save(model.state_dict(), f"variance_mlp/{dataset_name}_variance_mlp_25.pth")
-
-        all_patches = []
-        all_patches_mean = []
-
-        total_loss = 0
-        num_batches = 0
-        for data in dataloaders["testing"]:
-            with torch.no_grad():
-                embedding = embedder.embed(data["image"].to(device))[0]
-            embedding = embedding.reshape(len(data["image"]), -1, embedding.shape[1])
-            all_patches.append(embedding.cpu())
-            all_patches_mean.append(embedding.mean(dim=1))
-
-        all_patches = torch.cat(all_patches, dim=0)
-        all_patches_mean = torch.cat(all_patches_mean, dim=0)
-        target_variances = generate_knn_target_variances_rep(all_patches_mean, 25).cpu()
-        all_patches_mean = []
-
-        dset = VarianceTrainSet(all_patches, target_variances)
-        loader = torch.utils.data.DataLoader(dset, batch_size=50, shuffle=True, pin_memory=True, num_workers=2)
-
-        for patches, targets in loader:
-            preds = model(patches.to(device))
-            loss = loss_fn(preds, targets.to(device))
-
-            total_loss += loss.item()
-            num_batches += 1
-
-        print(f"{dataset_name} K: 25, Validation Loss: {total_loss / num_batches:.60f}")
-
-    # for epoch in range(10):
+    # for dataloaders_count, dataloaders in enumerate(list_of_dataloaders):
+    #     model = VarianceMLP().to(device)
+    #     optimizer = torch.optim.Adam(model.parameters(), lr=1e-4, weight_decay=1e-5)
+    #     loss_fn = nn.MSELoss()
+    #
+    #     dataset_name = dataloaders["training"].name
+    #     imagesize = dataloaders["training"].dataset.imagesize
+    #
+    #     embedder: simplenet.SimpleNet = methods["get_simplenet"](imagesize, device)[0]
+    #
+    #     #Extracting target variances
+    #     all_patches = []
+    #     all_patches_mean = []
+    #
+    #     for data in dataloaders["training"]:
+    #         with torch.no_grad():
+    #             embedding = embedder.embed(data["image"].to(device))[0]
+    #         embedding = embedding.reshape(len(data["image"]), -1, embedding.shape[1])
+    #         all_patches.append(embedding.cpu())
+    #         all_patches_mean.append(embedding.mean(dim=1))
+    #
+    #     all_patches = torch.cat(all_patches, dim=0)
+    #     all_patches_mean = torch.cat(all_patches_mean, dim=0)
+    #     target_variances = generate_knn_target_variances_rep(all_patches_mean, 25).cpu()
+    #     all_patches_mean = []
+    #
+    #     dset = VarianceTrainSet(all_patches, target_variances)
+    #     loader = torch.utils.data.DataLoader(dset, batch_size=50, shuffle=False, pin_memory=True, num_workers=2)
+    #
+    #     #training the model on target variances
     #     model.train()
-    #     total_loss = 0
-    #     num_batches = 0
-    #
-    #     for dataloader_count, dataloaders in enumerate(list_of_dataloaders):
-    #         dataset_name = dataloaders["training"].name
-    #         imagesize = dataloaders["training"].dataset.imagesize
-    #
-    #         embedder: simplenet.SimpleNet = methods["get_simplenet"](imagesize, device)[0]
-    #
-    #         all_patches = []
-    #         all_patches_mean = []
-    #
-    #         for data in dataloaders["training"]:
-    #             with torch.no_grad():
-    #                 embedding = embedder.embed(data["image"].to(device))[0]
-    #             embedding = embedding.reshape(len(data["image"]), -1, embedding.shape[1])
-    #             all_patches.append(embedding.cpu())
-    #             all_patches_mean.append(embedding.mean(dim=1))
-    #
-    #         all_patches = torch.cat(all_patches, dim=0)
-    #         all_patches_mean = torch.cat(all_patches_mean, dim=0)
-    #         target_variances = generate_knn_target_variances_rep(all_patches_mean, 25).cpu()
-    #         all_patches_mean = []
-    #
-    #         dset = VarianceTrainSet(all_patches, target_variances)
-    #         loader = torch.utils.data.DataLoader(dset, batch_size=50, shuffle=True, pin_memory=True, num_workers=2)
+    #     for epoch in range(30):
+    #         total_loss = 0
+    #         num_batches = 0
     #
     #         for patches, targets in loader:
     #             optimizer.zero_grad()
@@ -456,20 +384,15 @@ def run(
     #             total_loss += loss.item()
     #             num_batches += 1
     #
-    #     print(f"Epoch {epoch + 1} | Loss: {total_loss / num_batches:.60f}")
-    # torch.save(model.state_dict(), "variance_mlp_25.pth")
-    #
-    # model.eval()
-    # total_loss = 0
-    # num_batches = 0
-    # for dataloader_count, dataloaders in enumerate(list_of_dataloaders):
-    #     imagesize = dataloaders["testing"].dataset.imagesize
-    #
-    #     embedder: SimpleNet = methods["get_simplenet"](imagesize, device)[0]
+    #         print(f"{dataset_name}: Epoch {epoch + 1} | Loss: {total_loss / num_batches:.60f}")
+    #     os.makedirs("variance_mlp", exist_ok=True)
+    #     torch.save(model.state_dict(), f"variance_mlp/{dataset_name}_variance_mlp_25.pth")
     #
     #     all_patches = []
     #     all_patches_mean = []
     #
+    #     total_loss = 0
+    #     num_batches = 0
     #     for data in dataloaders["testing"]:
     #         with torch.no_grad():
     #             embedding = embedder.embed(data["image"].to(device))[0]
@@ -491,7 +414,88 @@ def run(
     #
     #         total_loss += loss.item()
     #         num_batches += 1
-    # print(f"K: 25, Validation Loss: {total_loss / num_batches:.60f}")
+    #
+    #     print(f"{dataset_name} K: 25, Validation Loss: {total_loss / num_batches:.60f}")
+
+    model = VarianceMLP().to(device)
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-4, weight_decay=1e-5)
+    loss_fn = nn.MSELoss()
+
+    for epoch in range(10):
+        model.train()
+        total_loss = 0
+        num_batches = 0
+
+        for dataloader_count, dataloaders in enumerate(list_of_dataloaders):
+            dataset_name = dataloaders["training"].name
+            imagesize = dataloaders["training"].dataset.imagesize
+
+            embedder: simplenet.SimpleNet = methods["get_simplenet"](imagesize, device)[0]
+
+            all_patches = []
+            all_patches_mean = []
+
+            for data in dataloaders["training"]:
+                with torch.no_grad():
+                    embedding = embedder.embed(data["image"].to(device))[0]
+                embedding = embedding.reshape(len(data["image"]), -1, embedding.shape[1])
+                all_patches.append(embedding.cpu())
+                all_patches_mean.append(embedding.mean(dim=1))
+
+            all_patches = torch.cat(all_patches, dim=0)
+            all_patches_mean = torch.cat(all_patches_mean, dim=0)
+            target_variances = generate_knn_target_variances_rep(all_patches_mean, 25).cpu()
+            all_patches_mean = []
+
+            dset = VarianceTrainSet(all_patches, target_variances)
+            loader = torch.utils.data.DataLoader(dset, batch_size=50, shuffle=True, pin_memory=True, num_workers=2)
+
+            for patches, targets in loader:
+                optimizer.zero_grad()
+                preds = model(patches.to(device))
+                loss = loss_fn(preds, targets.to(device))
+                loss.backward()
+                optimizer.step()
+
+                total_loss += loss.item()
+                num_batches += 1
+
+        print(f"Epoch {epoch + 1} | Loss: {total_loss / num_batches:.60f}")
+    torch.save(model.state_dict(), "variance_mlp_25.pth")
+
+    model.eval()
+    total_loss = 0
+    num_batches = 0
+    for dataloader_count, dataloaders in enumerate(list_of_dataloaders):
+        imagesize = dataloaders["testing"].dataset.imagesize
+
+        embedder: SimpleNet = methods["get_simplenet"](imagesize, device)[0]
+
+        all_patches = []
+        all_patches_mean = []
+
+        for data in dataloaders["testing"]:
+            with torch.no_grad():
+                embedding = embedder.embed(data["image"].to(device))[0]
+            embedding = embedding.reshape(len(data["image"]), -1, embedding.shape[1])
+            all_patches.append(embedding.cpu())
+            all_patches_mean.append(embedding.mean(dim=1))
+
+        all_patches = torch.cat(all_patches, dim=0)
+        all_patches_mean = torch.cat(all_patches_mean, dim=0)
+        target_variances = generate_knn_target_variances_rep(all_patches_mean, 25).cpu()
+        all_patches_mean = []
+
+        dset = VarianceTrainSet(all_patches, target_variances)
+        loader = torch.utils.data.DataLoader(dset, batch_size=50, shuffle=True, pin_memory=True, num_workers=2)
+
+        for patches, targets in loader:
+            preds = model(patches.to(device))
+            loss = loss_fn(preds, targets.to(device))
+
+            total_loss += loss.item()
+            num_batches += 1
+    print(f"K: 25, Validation Loss: {total_loss / num_batches:.60f}")
 
 
 if __name__ == "__main__":
