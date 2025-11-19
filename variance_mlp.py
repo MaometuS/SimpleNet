@@ -343,6 +343,7 @@ def run(
     for dataloaders_count, dataloaders in enumerate(list_of_dataloaders):
         model = VarianceMLP().to(device)
         model.load_state_dict(torch.load(f"variance_mlp/{dataset_name}_variance_mlp_25.pth"))
+        model.eval()
         # optimizer = torch.optim.Adam(model.parameters(), lr=1e-4, weight_decay=1e-5)
         # loss_fn = nn.MSELoss()
         #
