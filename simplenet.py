@@ -494,11 +494,14 @@ class SimpleNet(torch.nn.Module):
                     else:
                         true_feats = self._embed(img, evaluation=False)[0]
 
+
                     debatched_true_feats = true_feats.reshape(8, -1, true_feats.shape[1])
                     with torch.no_grad():
                        predicted_var = self.variance_mlp(debatched_true_feats)
                     std = torch.clamp(torch.sqrt(predicted_var + 1e-6), max=10.0)
-                    noise = torch.randn_like(debatched_true_feats) * (std.unsqueeze(1) * 1.2)
+                    print(debatched_true_feats.shape)
+                    print(std.shape)
+                    noise = torch.randn_like(debatched_true_feats) * (std.unsqueeze(1) * 400)
                     fake_feats = (debatched_true_feats + noise).reshape(true_feats.shape)
 
                     # noise_idxs = torch.randint(0, self.mix_noise, torch.Size([true_feats.shape[0]]))

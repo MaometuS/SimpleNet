@@ -1,5 +1,4 @@
 from numpy import var
-from numpy.core.numeric import infty
 from torch import nn
 import torch.nn.functional as F
 import torch
@@ -340,15 +339,17 @@ def run(
 
     utils.fix_seeds(seed)
 
+    model = VarianceMLP().to(device)
+    model.load_state_dict(torch.load("variance_mlp_25.pth"))
+    model.eval()
+
     for dataloaders_count, dataloaders in enumerate(list_of_dataloaders):
-        model = VarianceMLP().to(device)
-        model.load_state_dict(torch.load(f"variance_mlp/{dataset_name}_variance_mlp_25.pth"))
-        model.eval()
         # optimizer = torch.optim.Adam(model.parameters(), lr=1e-4, weight_decay=1e-5)
         # loss_fn = nn.MSELoss()
         #
         dataset_name = dataloaders["training"].name
         imagesize = dataloaders["training"].dataset.imagesize
+
         #
         embedder: simplenet.SimpleNet = methods["get_simplenet"](imagesize, device)[0]
         #
@@ -421,7 +422,7 @@ def run(
             else:
                 mn = min(mn, torch.min(preds))
 
-            if mx in None:
+            if mx is None:
                 mx = torch.max(preds)
             else:
                 mx = max(mx, torch.max(preds))
