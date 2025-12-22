@@ -422,8 +422,8 @@ def run(
         # all_patches = []
         # all_patches_mean = []
         #
-        total_loss = 0
-        num_batches = 0
+        # total_loss = 0
+        # num_batches = 0
         # for data in dataloaders["testing"]:
         #     with torch.no_grad():
         #         embedding = embedder.embed(data["image"].to(device))[0]
@@ -481,7 +481,7 @@ def run(
 
         all_patches = torch.cat(all_patches, dim=0)
         # all_patches_mean = torch.cat(all_patches_mean, dim=0)
-        target_variances = generate_knn_target_variances_rep(all_patches, 25).cpu()
+        target_variances = generate_spatial_knn_target_variances(all_patches, 25).cpu()
 
         dset = VarianceTrainSet(all_patches, target_variances)
         loader = torch.utils.data.DataLoader(dset, batch_size=50, shuffle=False, pin_memory=True, num_workers=2)
@@ -519,8 +519,8 @@ def run(
             all_patches_mean.append(embedding.mean(dim=1))
 
         all_patches = torch.cat(all_patches, dim=0)
-        all_patches_mean = torch.cat(all_patches_mean, dim=0)
-        target_variances = generate_knn_target_variances_rep(all_patches_mean, 25).cpu()
+        # all_patches_mean = torch.cat(all_patches_mean, dim=0)
+        target_variances = generate_spatial_knn_target_variances(all_patches, 25).cpu()
         all_patches_mean = []
 
         dset = VarianceTrainSet(all_patches, target_variances)

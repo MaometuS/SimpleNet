@@ -429,7 +429,7 @@ class SimpleNet(torch.nn.Module):
         best_record = None
         for i_mepoch in range(self.meta_epochs):
 
-            self._train_discriminator(training_data)
+            self._train_discriminator(training_data, current_meta_epoch=i_mepoch)
 
             # torch.cuda.empty_cache()
             scores, segmentations, features, labels_gt, masks_gt = self.predict(test_data)
@@ -462,7 +462,7 @@ class SimpleNet(torch.nn.Module):
         return best_record
             
 
-    def _train_discriminator(self, input_data):
+    def _train_discriminator(self, input_data, current_meta_epoch=1):
         """Computes and sets the support features for SPADE."""
         _ = self.forward_modules.eval()
         
@@ -499,10 +499,9 @@ class SimpleNet(torch.nn.Module):
                     with torch.no_grad():
                        predicted_var = self.variance_mlp(debatched_true_feats)
                     std = torch.clamp(torch.sqrt(predicted_var + 1e-6), max=10.0)
-                    print(debatched_true_feats.shape)
-                    print(std.shape)
-                    noise = torch.randn_like(debatched_true_feats) * (std.unsqueeze(1) * 400)
-                    fake_feats = (debatched_true_feats + noise).reshape(true_feats.shape)
+                    noise_scale = 400 * max(0, 1 - current_meta_epoch / (0.7 * 40))
+                    noise = torch.randn_like(debatched_true_feats) * (std * noise_scale)
+                    fake_feats = (debatched_true_feats + noise.detach()).reshape(true_feats.shape)
 
                     # noise_idxs = torch.randint(0, self.mix_noise, torch.Size([true_feats.shape[0]]))
                     # noise_one_hot = torch.nn.functional.one_hot(noise_idxs, num_classes=self.mix_noise).to(self.device) # (N, K)

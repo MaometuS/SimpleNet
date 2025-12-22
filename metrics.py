@@ -51,6 +51,12 @@ def compute_pixelwise_retrieval_metrics(anomaly_segmentations, ground_truth_mask
     flat_anomaly_segmentations = anomaly_segmentations.ravel()
     flat_ground_truth_masks = ground_truth_masks.ravel()
 
+    anom_mean = flat_anomaly_segmentations[flat_ground_truth_masks == 1].mean()
+    norm_mean = flat_anomaly_segmentations[flat_ground_truth_masks == 0].mean()
+
+    print("pixel score mean | anomaly:", anom_mean)
+    print("pixel score mean | normal :", norm_mean)
+
     fpr, tpr, thresholds = metrics.roc_curve(
         flat_ground_truth_masks.astype(int), flat_anomaly_segmentations
     )
