@@ -497,25 +497,48 @@ class SimpleNet(torch.nn.Module):
 
                     debatched_true_feats = true_feats.reshape(8, -1, true_feats.shape[1])
                     with torch.no_grad():
-                       predicted_var = self.variance_mlp(debatched_true_feats)
-                    std = torch.clamp(torch.sqrt(predicted_var + 1e-6), max=10.0)
-                    noise_scale = 400 * max(0, 1 - current_meta_epoch / (0.7 * 40))
-                    noise = torch.randn_like(debatched_true_feats) * (std * noise_scale)
-                    fake_feats = (debatched_true_feats + noise.detach()).reshape(true_feats.shape)
+                        # predicted_var = self.variance_mlp(debatched_true_feats)
+                        # std = torch.clamp(torch.sqrt(predicted_var + 1e-6), max=10.0)
+                        # noise = torch.randn_like(debatched_true_feats) * std * 1.1
+                        # feat_mean = debatched_true_feats.mean(dim=1, keepdim=True)
+                        # direction = debatched_true_feats - feat_mean
+                        # direction = direction / (direction.norm(dim=-1, keepdim=True) + 1e-6)
+                        # noise = noise * direction
+                        # noise = noise / (noise.norm(dim=-1, keepdim=True) + 1e-6)
+                        # noise = noise.detach()
+
+                        predicted_var = self.variance_mlp(debatched_true_feats)
+                        std = torch.clamp(torch.sqrt(predicted_var + 1e-6), max=10.0)
+                        feat_mean = debatched_true_feats.mean(dim=1, keepdim=True)
+                        direction = debatched_true_feats - feat_mean
+                        direction = direction / (direction.norm(dim=-1, keepdim=True) + 1e-6)  # [B,P,D]
+                        dir_var = (std ** 2 * direction ** 2).sum(dim=-1, keepdim=True)  # [B,P,1]
+                        dir_std = torch.sqrt(dir_var + 1e-6) * 1.1  # [B,P,1]
+                        noise = torch.randn_like(debatched_true_feats)
+                        noise = noise / (noise.norm(dim=-1, keepdim=True) + 1e-6)  # unit norm
+                        noise = noise * dir_std
+                        noise = noise.detach()
+
+                    fake_feats = (debatched_true_feats + noise).reshape(true_feats.shape)
 
                     # noise_idxs = torch.randint(0, self.mix_noise, torch.Size([true_feats.shape[0]]))
                     # noise_one_hot = torch.nn.functional.one_hot(noise_idxs, num_classes=self.mix_noise).to(self.device) # (N, K)
-                    # noise = torch.stack([
+                    # old_noise = torch.stack([
                     #     torch.normal(0, self.noise_std * 1.1**(k), true_feats.shape)
                     #     for k in range(self.mix_noise)], dim=1).to(self.device) # (N, K, C)
-                    # noise = (noise * noise_one_hot.unsqueeze(-1)).sum(1)
-                    # fake_feats = true_feats + noise
+                    # old_noise = (old_noise * noise_one_hot.unsqueeze(-1)).sum(1)
+
+                    # print("My noise: ", noise.mean())
+                    # print("Old noise: ", old_noise.mean())
+                    # print("Noise diff: ", noise.mean()-old_noise.mean())
+
+                    # fake_feats = true_feats + old_noise
 
                     scores = self.discriminator(torch.cat([true_feats, fake_feats]))
                     true_scores = scores[:len(true_feats)]
                     fake_scores = scores[len(fake_feats):]
 
-                    margin_anchor = 0.3*self.dsc_margin
+                    margin_anchor = 0.3 * std.mean()
                     lambda_anchor = 0.001
 
                     anchor_loss = torch.relu(
@@ -532,7 +555,7 @@ class SimpleNet(torch.nn.Module):
                     self.logger.logger.add_scalar(f"p_fake", p_fake, self.logger.g_iter)
 
                     loss = true_loss.mean() + fake_loss.mean()
-                    loss += lambda_anchor*anchor_loss
+                    # loss += lambda_anchor*anchor_loss
                     self.logger.logger.add_scalar("loss", loss, self.logger.g_iter)
                     self.logger.step()
 
@@ -547,6 +570,11 @@ class SimpleNet(torch.nn.Module):
                     all_loss.append(loss.item())
                     all_p_true.append(p_true.cpu().item())
                     all_p_fake.append(p_fake.cpu().item())
+
+                    # print("Th: ", th)
+                    # print("Margin anchor: ", margin_anchor)
+                    # print("Anchor loss: ", anchor_loss)
+                    # print("Loss: ", loss)
                 
                 if len(embeddings_list) > 0:
                     self.auto_noise[1] = torch.cat(embeddings_list).std(0).mean(-1)
