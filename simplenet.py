@@ -514,7 +514,14 @@ class SimpleNet(torch.nn.Module):
                     scores = self.discriminator(torch.cat([true_feats, fake_feats]))
                     true_scores = scores[:len(true_feats)]
                     fake_scores = scores[len(fake_feats):]
-                    
+
+                    margin_anchor = 0.3*self.dsc_margin
+                    lambda_anchor = 0.001
+
+                    anchor_loss = torch.relu(
+                        margin_anchor - (true_scores - fake_scores).mean()
+                    )
+
                     th = self.dsc_margin
                     p_true = (true_scores.detach() >= th).sum() / len(true_scores)
                     p_fake = (fake_scores.detach() < -th).sum() / len(fake_scores)
@@ -525,6 +532,7 @@ class SimpleNet(torch.nn.Module):
                     self.logger.logger.add_scalar(f"p_fake", p_fake, self.logger.g_iter)
 
                     loss = true_loss.mean() + fake_loss.mean()
+                    loss += lambda_anchor*anchor_loss
                     self.logger.logger.add_scalar("loss", loss, self.logger.g_iter)
                     self.logger.step()
 
