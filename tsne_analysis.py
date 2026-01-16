@@ -320,7 +320,6 @@ def run(
     device = utils.set_torch_device(gpu)
 
     for _, dataloaders in enumerate(list_of_dataloaders):
-        dataset_name = dataloaders["testing"].name
         imagesize = dataloaders["testing"].dataset.imagesize
 
         embedder: simplenet.SimpleNet = methods["get_simplenet"](imagesize, device)[0]
@@ -331,13 +330,17 @@ def run(
                 mask.float(),
                 size=(36,36),
                 mode="nearest"
+            )
         
-            patch_mask = patch_mask.squeze(1).reshape(mask.shape[0], -1)
+            patch_mask = patch_mask.squeeze(1).reshape(mask.shape[0], -1)
 
             features = embedder.embed(data["image"].to(device))[0]
-            debatched_features = features.reshape(len(data["image"]), -1, true_feats.shape[1])
-            anomaly_feats = debatched[patch_mask == 1]
-            anomaly_feats = anomaly_feats.reshape(features.shape)
+            debatched_features = features.reshape(len(data["image"]), -1, features.shape[1])
+            anomaly_feats = debatched_features[patch_mask == 1]
+            if len(anomaly_feats) == 0:
+                continue
+
+            print("Found one")
             idx = torch.randperm(anomaly_feats.shape[0])[:50]
             
             anim_feats_all = torch.cat([anim_feats_all, anomaly_feats.cpu()[idx]], dim=0)
@@ -373,7 +376,7 @@ def run(
                 fake_feats_all = torch.cat([fake_feats_all, fake_feats.cpu()[idx_fake]], dim=0)
 
         X = torch.cat([true_feats_all, fake_feats_all, anim_feats_all], dim=0)
-        labels = torch.cat([torch.zeros(true_feats_all.shape[0]), torch.ones(fake_feats_all.shape[0]), torch.ones(anom_feats_all.shape[0])*2])
+        labels = torch.cat([torch.zeros(true_feats_all.shape[0]), torch.ones(fake_feats_all.shape[0]), torch.ones(anim_feats_all.shape[0])*2])
         X = torch.nn.functional.normalize(X, dim=1)
 
         X_np = X.detach().cpu().numpy()
