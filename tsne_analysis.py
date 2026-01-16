@@ -307,18 +307,20 @@ def run(
         gpu,
         fake_method,
 ):
-    print("running")
+    methods = {key: item for (key, item) in methods}
+
     true_feats_all = []
     fake_feats_all = []
 
     list_of_dataloaders = methods["get_dataloaders"](seed)
-    embedder: simplenet.SimpleNet = methods["get_simplenet"](imagesize, device)[0]
     device = utils.set_torch_device(gpu)
 
     with torch.no_grad():
         for _, dataloaders in enumerate(list_of_dataloaders):
             dataset_name = dataloaders["training"].name
             imagesize = dataloaders["training"].dataset.imagesize
+
+            embedder: simplenet.SimpleNet = methods["get_simplenet"](imagesize, device)[0]
 
             variance_mlp = VarianceMLP().to(device)
             variance_mlp.load_state_dict(torch.load(f"variance_mlp/{dataset_name}_variance_mlp_25.pth"))
