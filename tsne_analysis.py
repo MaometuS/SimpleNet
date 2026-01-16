@@ -15,6 +15,8 @@ import numpy as np
 from sklearn.manifold import TSNE
 import matplotlib.pyplot as plt
 
+LOGGER = logging.getLogger(__name__)
+
 _DATASETS = {
     "mvtec": ["datasets.mvtec", "MVTecDataset"],
 }
