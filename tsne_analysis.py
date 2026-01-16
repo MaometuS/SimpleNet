@@ -14,6 +14,7 @@ import simplenet
 import numpy as np
 from sklearn.manifold import TSNE
 import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
 from variance_mlp import VarianceMLP
 
 LOGGER = logging.getLogger(__name__)
@@ -379,11 +380,11 @@ def run(
         labels = torch.cat([torch.zeros(true_feats_all.shape[0]), torch.ones(fake_feats_all.shape[0]), torch.ones(anim_feats_all.shape[0])*2])
         X = torch.nn.functional.normalize(X, dim=1)
 
-        X_np = X.detach().cpu().numpy()
-        Y_np = labels.cpu().numpy()
+        PCA = PCA(n_components=50, random_state=0)
+        X_pca = pca.fit_transform(X_np)
 
         tsne = TSNE(
-            n_components=2,
+            n_components=3,
             perplexity=30,
             learning_rate=200,
             max_iter=1000,
@@ -391,37 +392,39 @@ def run(
             random_state=0
         )
 
-        X_2d = tsne.fit_transform(X_np)
+        X_3d = tsne.fit_transform(X_pca)
 
-        plt.figure(figsize=(8, 6))
+        fig = plt.figure(figsize=(8, 6))
+        ax = fig.add_subplot(111, projection='3d')
 
-        plt.scatter(
-            X_2d[Y_np == 0, 0],
-            X_2d[Y_np == 0, 1],
+        ax.scatter(
+            X_3d[Y_np == 0, 0],
+            X_3d[Y_np == 0, 1],
+            X_3d[Y_np == 0, 2],
             s=5,
             alpha = 0.5,
             label="True"
         )
 
-        plt.scatter(
-            X_2d[Y_np == 1, 0],
-            X_2d[Y_np == 1, 1],
+        ax.scatter(
+            X_3d[Y_np == 1, 0],
+            X_3d[Y_np == 1, 1],
+            X_3d[Y_np == 1, 2],
             s=5,
             alpha = 0.5,
             label="Fake"
         )
 
-        plt.scatter(
-            X_2d[Y_np == 2, 0],
-            X_2d[Y_np == 2, 1],
+        ax.scatter(
+            X_3d[Y_np == 2, 0],
+            X_3d[Y_np == 2, 1],
+            X_3d[Y_np == 2, 2],
             s=5,
             alpha = 0.5,
             label="Anomaly"
         )
 
-        print("I am here")
-
-        plt.legend()
+        ax.legend()
 
         save_path = "tsne_analysis.png"
         plt.savefig(save_path, dpi=300, bbox_inches="tight")
