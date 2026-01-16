@@ -18,6 +18,7 @@ import matplotlib.pyplot as plt
 @click.group(chain=True)
 @click.option("--results_path", type=str, default="results")
 @click.option("--gpu", type=int, default=[0], multiple=True, show_default=True)
+@click.option("--fake_method", type=str, default="method_1")
 @click.option("--seed", type=int, default=0, show_default=True)
 @click.option("--log_group", type=str, default="group")
 @click.option("--log_project", type=str, default="project")
@@ -300,6 +301,7 @@ def run(
         seed,
         test,
         gpu,
+        fake_method,
 ):
     true_feats_all = []
     fake_feats_all = []
@@ -321,10 +323,16 @@ def run(
                 embedding = embedder.embed(data["image"].to(device))[0]
 
                 debatched_embedding = embedding.reshape(len(data["image"]), -1, embedding.shape[1])
-                fake_feats = generate_fake_feats(variance_mlp, debatched_embedding).reshape(embedding.shape)
+                match fake_method:
+                    case "method_1":
+                        fake_feats = generate_fake_feats(variance_mlp, debatched_embedding).reshape(embedding.shape)
+                    case "method_2":
+                        fake_feats = generate_fake_feats_directional_1(variance_mlp, debatched_embedding).reshape(embedding.shape)
+                    case "method_2":
+                        fake_feats = generate_fake_feats_directional_2(variance_mlp, debatched_embedding).reshape(embedding.shape)
 
-                idx_true = torch.randperm(true_flat.shape[0])[:50]
-                idx_fake = torch.randperm(fake_flat.shape[0])[:50]
+                idx_true = torch.randperm(true_feats.shape[0])[:50]
+                idx_fake = torch.randperm(fake_feats.shape[0])[:50]
 
                 true_feats_all.append(embedding.cpu()[idx_true])
                 fake_feats_all.append(fake_feats.cpu()[idx_fake])
