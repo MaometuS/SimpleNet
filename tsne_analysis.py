@@ -355,6 +355,8 @@ def run(
 
         X_2d = tsne.fit_transform(X_np)
 
+        plt.figure(figsize=(8, 6))
+
         plt.scatter(
             X_2d[y_np == 0, 0],
             X_2d[y_np == 0, 1],
@@ -372,4 +374,7 @@ def run(
         )
 
         plt.legend()
-        plt.show()
+
+        save_path = "tsne_analysis.png"
+        plt.savefig(save_path, dpi=300, bbox_inches="tight")
+        plt.close()
