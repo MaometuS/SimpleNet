@@ -15,6 +15,10 @@ import numpy as np
 from sklearn.manifold import TSNE
 import matplotlib.pyplot as plt
 
+_DATASETS = {
+    "mvtec": ["datasets.mvtec", "MVTecDataset"],
+}
+
 @click.group(chain=True)
 @click.option("--results_path", type=str, default="results")
 @click.option("--gpu", type=int, default=[0], multiple=True, show_default=True)
@@ -261,7 +265,7 @@ def generate_fake_feats(variance_mlp, debatched_true_feats):
     return fake_feats
 
 def generate_fake_feats_directional_1(variance_mlp, debatched_true_feats):
-    predicted_var = self.variance_mlp(debatched_true_feats)
+    predicted_var = variance_mlp(debatched_true_feats)
     std = torch.clamp(torch.sqrt(predicted_var + 1e-6), max=10.0)
     noise = torch.randn_like(debatched_true_feats) * std * 1.1
     feat_mean = debatched_true_feats.mean(dim=1, keepdim=True)
@@ -275,7 +279,7 @@ def generate_fake_feats_directional_1(variance_mlp, debatched_true_feats):
     return fake_feats
 
 def generate_fake_feats_directional_2(variance_mlp, debatched_true_feats):
-    predicted_var = self.variance_mlp(debatched_true_feats)
+    predicted_var = variance_mlp(debatched_true_feats)
     std = torch.clamp(torch.sqrt(predicted_var + 1e-6), max=10.0)
     feat_mean = debatched_true_feats.mean(dim=1, keepdim=True)
     direction = debatched_true_feats - feat_mean
@@ -303,6 +307,7 @@ def run(
         gpu,
         fake_method,
 ):
+    print("running")
     true_feats_all = []
     fake_feats_all = []
 
@@ -358,23 +363,28 @@ def run(
         plt.figure(figsize=(8, 6))
 
         plt.scatter(
-            X_2d[y_np == 0, 0],
-            X_2d[y_np == 0, 1],
+            X_2d[Y_np == 0, 0],
+            X_2d[Y_np == 0, 1],
             s=5,
             alpha = 0.5,
             label="True"
         )
 
         plt.scatter(
-            X_2d[y_np == 1, 0],
-            X_2d[y_np == 1, 1],
+            X_2d[Y_np == 1, 0],
+            X_2d[Y_np == 1, 1],
             s=5,
             alpha = 0.5,
             label="Fake"
         )
+
+        print("I am here")
 
         plt.legend()
 
         save_path = "tsne_analysis.png"
         plt.savefig(save_path, dpi=300, bbox_inches="tight")
         plt.close()
+
+if __name__ == "__main__":
+    main()
