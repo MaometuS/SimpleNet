@@ -14,6 +14,7 @@ import simplenet
 import numpy as np
 from sklearn.manifold import TSNE
 import matplotlib.pyplot as plt
+from variance_mlp import VarianceMLP
 
 LOGGER = logging.getLogger(__name__)
 
@@ -311,11 +312,17 @@ def run(
 ):
     methods = {key: item for (key, item) in methods}
 
-    true_feats_all = []
-    fake_feats_all = []
+    true_feats_all = torch.Tensor([])
+    fake_feats_all = torch.Tensor([])
 
     list_of_dataloaders = methods["get_dataloaders"](seed)
     device = utils.set_torch_device(gpu)
+
+    for _, dataloaders in enumerate(list_of_dataloaders):
+        for data in dataloaders["testing"]:
+            print(data["mask"].shape)
+
+    return
 
     with torch.no_grad():
         for _, dataloaders in enumerate(list_of_dataloaders):
@@ -329,25 +336,25 @@ def run(
             variance_mlp.eval()
 
             for data in dataloaders["training"]:
-                embedding = embedder.embed(data["image"].to(device))[0]
+                true_feats = embedder.embed(data["image"].to(device))[0]
 
-                debatched_embedding = embedding.reshape(len(data["image"]), -1, embedding.shape[1])
+                debatched_embedding = true_feats.reshape(len(data["image"]), -1, true_feats.shape[1])
                 match fake_method:
                     case "method_1":
-                        fake_feats = generate_fake_feats(variance_mlp, debatched_embedding).reshape(embedding.shape)
+                        fake_feats = generate_fake_feats(variance_mlp, debatched_embedding).reshape(true_feats.shape)
                     case "method_2":
-                        fake_feats = generate_fake_feats_directional_1(variance_mlp, debatched_embedding).reshape(embedding.shape)
-                    case "method_2":
-                        fake_feats = generate_fake_feats_directional_2(variance_mlp, debatched_embedding).reshape(embedding.shape)
+                        fake_feats = generate_fake_feats_directional_1(variance_mlp, debatched_embedding).reshape(true_feats.shape)
+                    case "method_3":
+                        fake_feats = generate_fake_feats_directional_2(variance_mlp, debatched_embedding).reshape(true_feats.shape)
 
                 idx_true = torch.randperm(true_feats.shape[0])[:50]
                 idx_fake = torch.randperm(fake_feats.shape[0])[:50]
 
-                true_feats_all.append(embedding.cpu()[idx_true])
-                fake_feats_all.append(fake_feats.cpu()[idx_fake])
+                true_feats_all = torch.cat([true_feats_all, true_feats.cpu()[idx_true]], dim=0)
+                fake_feats_all = torch.cat([fake_feats_all, fake_feats.cpu()[idx_fake]], dim=0)
 
-        X = torch.cat([true_feats_all, fake_feats_all], dim=0)
-        labels = torch.cat([torch.zeroes(true_feats_all.shape[0]), torch.ones(fake_feats_all.shape[0])])
+        X = torch.cat([torch.Tensor(true_feats_all), torch.Tensor(fake_feats_all)], dim=0)
+        labels = torch.cat([torch.zeros(true_feats_all.shape[0]), torch.ones(fake_feats_all.shape[0])])
         X = torch.nn.functional.normalize(X, dim=1)
 
         X_np = X.detach().cpu().numpy()
@@ -357,7 +364,7 @@ def run(
             n_components=2,
             perplexity=30,
             learning_rate=200,
-            n_iter=1000,
+            max_iter=1000,
             init="pca",
             random_state=0
         )
