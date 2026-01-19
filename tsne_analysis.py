@@ -13,6 +13,7 @@ from tqdm import tqdm
 import simplenet
 import numpy as np
 from sklearn.manifold import TSNE
+from sklearn.decomposition import PCA
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 from variance_mlp import VarianceMLP
@@ -341,11 +342,10 @@ def run(
             if len(anomaly_feats) == 0:
                 continue
 
-            print("Found one")
-            idx = torch.randperm(anomaly_feats.shape[0])[:50]
-            
-            anim_feats_all = torch.cat([anim_feats_all, anomaly_feats.cpu()[idx]], dim=0)
+            anim_feats_all = torch.cat([anim_feats_all, anomaly_feats.cpu()], dim=0)
 
+    idx = torch.randperm(anim_feats_all.shape[0])
+    anim_feats_all = anim_feats_all[idx][:1000]
 
     with torch.no_grad():
         for _, dataloaders in enumerate(list_of_dataloaders):
@@ -370,8 +370,8 @@ def run(
                     case "method_3":
                         fake_feats = generate_fake_feats_directional_2(variance_mlp, debatched_embedding).reshape(true_feats.shape)
 
-                idx_true = torch.randperm(true_feats.shape[0])[:50]
-                idx_fake = torch.randperm(fake_feats.shape[0])[:50]
+                idx_true = torch.randperm(true_feats.shape[0])[:5]
+                idx_fake = torch.randperm(fake_feats.shape[0])[:5]
 
                 true_feats_all = torch.cat([true_feats_all, true_feats.cpu()[idx_true]], dim=0)
                 fake_feats_all = torch.cat([fake_feats_all, fake_feats.cpu()[idx_fake]], dim=0)
@@ -380,8 +380,20 @@ def run(
         labels = torch.cat([torch.zeros(true_feats_all.shape[0]), torch.ones(fake_feats_all.shape[0]), torch.ones(anim_feats_all.shape[0])*2])
         X = torch.nn.functional.normalize(X, dim=1)
 
-        PCA = PCA(n_components=50, random_state=0)
+        print("True feats shape:", true_feats_all.shape)
+        print("False feats shape:", fake_feats_all.shape)
+        print("Anim feats shape:", anim_feats_all.shape)
+
+        X_np = X.detach().cpu().numpy()
+        Y_np = labels.cpu().numpy()
+
+        print("here")
+        print("X_np shape:", X_np.shape)
+
+        pca = PCA(n_components=30, svd_solver="randomized", random_state=0)
         X_pca = pca.fit_transform(X_np)
+
+        print("X_pca shape:", X_pca.shape)
 
         tsne = TSNE(
             n_components=3,
@@ -391,6 +403,8 @@ def run(
             init="pca",
             random_state=0
         )
+
+        print("TSNE done")
 
         X_3d = tsne.fit_transform(X_pca)
 
