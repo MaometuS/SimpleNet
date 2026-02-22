@@ -1,1 +1,6 @@
 __pycache__/*
+results/*
+variance_mlp/*
+variance_mlp_old/*
+datasets/__pycache__/*
+.idea

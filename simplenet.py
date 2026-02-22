@@ -497,9 +497,13 @@ class SimpleNet(torch.nn.Module):
 
                     debatched_true_feats = true_feats.reshape(8, -1, true_feats.shape[1])
                     with torch.no_grad():
-                        # predicted_var = self.variance_mlp(debatched_true_feats)
-                        # std = torch.clamp(torch.sqrt(predicted_var + 1e-6), max=10.0)
-                        # noise = torch.randn_like(debatched_true_feats) * std * 0.01
+                        predicted_var = self.variance_mlp(debatched_true_feats)
+                        std = torch.clamp(torch.sqrt(predicted_var + 1e-6), max=10.0)
+                        noise1 = torch.randn_like(debatched_true_feats) * std * 0.005
+                        noise2 = torch.randn_like(debatched_true_feats) * std * 0.01
+                        noise3 = torch.randn_like(debatched_true_feats) * std * 0.025
+                        noise4 = torch.randn_like(debatched_true_feats) * std * 0.05
+                        noise5 = torch.randn_like(debatched_true_feats) * std * 0.1
 
                         # predicted_var = self.variance_mlp(debatched_true_feats)
                         # std = torch.clamp(torch.sqrt(predicted_var + 1e-6), max=10.0)
@@ -511,19 +515,27 @@ class SimpleNet(torch.nn.Module):
                         # noise = noise / (noise.norm(dim=-1, keepdim=True) + 1e-6)
                         # noise = noise.detach()
 
-                        predicted_var = self.variance_mlp(debatched_true_feats)
-                        std = torch.clamp(torch.sqrt(predicted_var + 1e-6), max=10.0)
-                        feat_mean = debatched_true_feats.mean(dim=1, keepdim=True)
-                        direction = debatched_true_feats - feat_mean
-                        direction = direction / (direction.norm(dim=-1, keepdim=True) + 1e-6)  # [B,P,D]
-                        dir_var = (std ** 2 * direction ** 2).sum(dim=-1, keepdim=True)  # [B,P,1]
-                        dir_std = torch.sqrt(dir_var + 1e-6) # [B,P,1]
-                        noise = torch.randn_like(debatched_true_feats)
-                        noise = noise / (noise.norm(dim=-1, keepdim=True) + 1e-6)  # unit norm
-                        noise = noise * dir_std
-                        noise = noise.detach()
+                        # predicted_var = self.variance_mlp(debatched_true_feats)
+                        # std = torch.clamp(torch.sqrt(predicted_var + 1e-6), max=10.0)
+                        # feat_mean = debatched_true_feats.mean(dim=1, keepdim=True)
+                        # direction = debatched_true_feats - feat_mean
+                        # direction = direction / (direction.norm(dim=-1, keepdim=True) + 1e-6)  # [B,P,D]
+                        # dir_var = (std ** 2 * direction ** 2).sum(dim=-1, keepdim=True)  # [B,P,1]
+                        # dir_std = torch.sqrt(dir_var + 1e-6) # [B,P,1]
+                        # noise = torch.randn_like(debatched_true_feats)
+                        # noise = noise / (noise.norm(dim=-1, keepdim=True) + 1e-6)  # unit norm
+                        # noise = noise * dir_std
+                        # noise = noise.detach()
 
-                    fake_feats = (debatched_true_feats + noise.detach()).reshape(true_feats.shape)
+                    fake_feats1 = (debatched_true_feats + noise1.detach()).reshape(true_feats.shape)
+                    fake_feats2 = (debatched_true_feats + noise2.detach()).reshape(true_feats.shape)
+                    fake_feats3 = (debatched_true_feats + noise3.detach()).reshape(true_feats.shape)
+                    fake_feats4 = (debatched_true_feats + noise4.detach()).reshape(true_feats.shape)
+                    fake_feats5 = (debatched_true_feats + noise5.detach()).reshape(true_feats.shape)
+
+                    fake_feats = torch.cat((fake_feats1, fake_feats2, fake_feats3, fake_feats4, fake_feats5), dim=0)
+                    idx = torch.randperm(fake_feats.shape[0])
+                    fake_feats = fake_feats[idx[:true_feats.shape[0]]]
 
                     # noise_idxs = torch.randint(0, self.mix_noise, torch.Size([true_feats.shape[0]]))
                     # noise_one_hot = torch.nn.functional.one_hot(noise_idxs, num_classes=self.mix_noise).to(self.device) # (N, K)
@@ -541,13 +553,6 @@ class SimpleNet(torch.nn.Module):
                     scores = self.discriminator(torch.cat([true_feats, fake_feats]))
                     true_scores = scores[:len(true_feats)]
                     fake_scores = scores[len(fake_feats):]
-
-                    margin_anchor = 0.3 * std.mean()
-                    lambda_anchor = 0.001
-
-                    anchor_loss = torch.relu(
-                        margin_anchor - (true_scores - fake_scores).mean()
-                    )
 
                     th = self.dsc_margin
                     p_true = (true_scores.detach() >= th).sum() / len(true_scores)

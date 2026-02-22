@@ -5,7 +5,7 @@ dataset_flags=($(for dataset in "${datasets[@]}"; do echo '-d '"${dataset}"; don
 python3 tsne_analysis.py \
 --gpu 0 \
 --seed 0 \
---fake_method method_3 \
+--fake_method method_1 \
 --log_group simplenet_mvtec \
 --log_project MVTecAD_Results \
 --results_path results \

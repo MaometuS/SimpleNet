@@ -265,8 +265,20 @@ def net(
 def generate_fake_feats(variance_mlp, debatched_true_feats):
     predicted_var = variance_mlp(debatched_true_feats)
     std = torch.clamp(torch.sqrt(predicted_var + 1e-6), max=10.0)
-    noise = torch.randn_like(debatched_true_feats) * std * 0.01
-    fake_feats = (debatched_true_feats + noise.detach())
+    noise1 = torch.randn_like(debatched_true_feats) * std * 0.005
+    noise2 = torch.randn_like(debatched_true_feats) * std * 0.01
+    noise3 = torch.randn_like(debatched_true_feats) * std * 0.025
+    noise4 = torch.randn_like(debatched_true_feats) * std * 0.05
+    noise5 = torch.randn_like(debatched_true_feats) * std * 0.1
+
+    fake_feats1 = (debatched_true_feats + noise1.detach()).reshape(debatched_true_feats.shape)
+    fake_feats2 = (debatched_true_feats + noise2.detach()).reshape(debatched_true_feats.shape)
+    fake_feats3 = (debatched_true_feats + noise3.detach()).reshape(debatched_true_feats.shape)
+    fake_feats4 = (debatched_true_feats + noise4.detach()).reshape(debatched_true_feats.shape)
+    fake_feats5 = (debatched_true_feats + noise5.detach()).reshape(debatched_true_feats.shape)
+
+    fake_feats = torch.cat((fake_feats1, fake_feats2, fake_feats3, fake_feats4, fake_feats5), dim=0)
+
     return fake_feats
 
 def generate_fake_feats_directional_1(variance_mlp, debatched_true_feats):
@@ -364,7 +376,9 @@ def run(
                 debatched_embedding = true_feats.reshape(len(data["image"]), -1, true_feats.shape[1])
                 match fake_method:
                     case "method_1":
-                        fake_feats = generate_fake_feats(variance_mlp, debatched_embedding).reshape(true_feats.shape)
+                        fake_feats = generate_fake_feats(variance_mlp, debatched_embedding).reshape((true_feats.shape[0]*5, true_feats.shape[1]))
+                        idx = torch.randperm(fake_feats.shape[0])
+                        fake_feats = fake_feats[idx[:true_feats.shape[0]]]
                     case "method_2":
                         fake_feats = generate_fake_feats_directional_1(variance_mlp, debatched_embedding).reshape(true_feats.shape)
                     case "method_3":
@@ -380,20 +394,11 @@ def run(
         labels = torch.cat([torch.zeros(true_feats_all.shape[0]), torch.ones(fake_feats_all.shape[0]), torch.ones(anim_feats_all.shape[0])*2])
         X = torch.nn.functional.normalize(X, dim=1)
 
-        print("True feats shape:", true_feats_all.shape)
-        print("False feats shape:", fake_feats_all.shape)
-        print("Anim feats shape:", anim_feats_all.shape)
-
         X_np = X.detach().cpu().numpy()
         Y_np = labels.cpu().numpy()
 
-        print("here")
-        print("X_np shape:", X_np.shape)
-
         pca = PCA(n_components=30, svd_solver="randomized", random_state=0)
         X_pca = pca.fit_transform(X_np)
-
-        print("X_pca shape:", X_pca.shape)
 
         tsne = TSNE(
             n_components=3,
