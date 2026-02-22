@@ -481,7 +481,7 @@ def run(
 
         all_patches = torch.cat(all_patches, dim=0)
         # all_patches_mean = torch.cat(all_patches_mean, dim=0)
-        target_variances = generate_spatial_knn_target_variances(all_patches, 25).cpu()
+        target_variances = generate_spatial_knn_target_variances(all_patches, 100).cpu()
 
         dset = VarianceTrainSet(all_patches, target_variances)
         loader = torch.utils.data.DataLoader(dset, batch_size=50, shuffle=False, pin_memory=True, num_workers=2)
