@@ -18,6 +18,141 @@ _DATASETS = {
     "mvtec": ["datasets.mvtec", "MVTecDataset"],
 }
 
+class TrueSpatialLowRankGaussian(nn.Module):
+    """
+    Spatial Gaussian model with per-patch threshold T_p.
+
+    Each spatial location p:
+        x_{i,p} ~ N(mu_p, Sigma_p)
+
+    Sigma_p = U_p Lambda_p U_p^T + eps_p I
+    T_p = quantile of Mahalanobis at patch p
+    """
+
+    def __init__(self, k=64, quantile=0.99):
+        super.__init__()
+
+        self.k = k
+        self.quantile = quantile
+
+        self.mu = None        # (P, C)
+        self.U = None         # (P, C, k)
+        self.Lambda = None    # (P, k)
+        self.eps = None       # (P,)
+        self.T = None         # (P,)   <-- per patch
+
+        self.register_buffer("mu", None)
+        self.register_buffer("U", None)
+        self.register_buffer("Lambda", None)
+        self.register_buffer("eps", None)
+        self.register_buffer("T", None)
+        
+
+    # --------------------------------------------------
+    # FIT
+    # --------------------------------------------------
+    @torch.no_grad()
+    def fit(self, X):
+        """
+        X: (N, P, C)
+        """
+        N, P, C = X.shape
+
+        mu = X.mean(dim=0)
+        Xc = X - mu.unsqueeze(0)
+
+        U_list = []
+        Lambda_list = []
+        eps_list = []
+        T_list = []
+
+        for p in range(P):
+            Yp = Xc[:, p, :]  # (N, C)
+
+            # SVD
+            U_svd, S_svd, Vh = torch.linalg.svd(Yp, full_matrices=False)
+
+            eigvals = (S_svd ** 2) / (N - 1)
+            r = eigvals.shape[0]
+            k_eff = min(self.k, r)
+
+            V_k = Vh[:k_eff].T
+            Lambda_k = eigvals[:k_eff]
+
+            # Paper epsilon
+            if k_eff < r:
+                eps_p = eigvals[k_eff:].mean()
+            else:
+                eps_p = torch.tensor(1e-6, device=X.device)
+
+            # ---- Compute Mahalanobis for this patch ----
+            d = Yp  # already centered
+            proj = d @ V_k
+            term1 = (proj ** 2 / Lambda_k).sum(dim=1)
+
+            residual = d - proj @ V_k.T
+            term2 = (residual ** 2).sum(dim=1) / eps_p
+
+            scores_p = term1 + term2
+
+            T_p = torch.quantile(scores_p, self.quantile)
+
+            U_list.append(V_k)
+            Lambda_list.append(Lambda_k)
+            eps_list.append(eps_p)
+            T_list.append(T_p)
+
+        self.mu = mu
+        self.U = torch.stack(U_list, dim=0)
+        self.Lambda = torch.stack(Lambda_list, dim=0)
+        self.eps = torch.stack(eps_list, dim=0)
+        self.T = torch.stack(T_list, dim=0)  # (P,)
+
+    # --------------------------------------------------
+    # GENERATE ANOMALIES (per patch T)
+    # --------------------------------------------------
+    @torch.no_grad()
+    def generate_anomalies(self, B, delta=1):
+        """
+        Generate anomalies just outside each patch's boundary.
+
+        Mahalanobis radius:
+            r_p = sqrt(T_p) + delta
+        """
+        P, C = self.mu.shape
+        device = self.mu.device
+
+        anomalies = []
+
+        for p in range(P):
+            U_p = self.U[p]
+            Lambda_p = self.Lambda[p]
+            eps_p = self.eps[p]
+            T_p = self.T[p]
+
+            # Random direction in C-dim
+            u = torch.randn(B, C, device=device)
+            u = u / u.norm(dim=1, keepdim=True)
+
+            r = torch.sqrt(T_p) + delta
+            w = u * r
+
+            # Low-rank component
+            proj = w @ U_p
+            low_rank = (proj * torch.sqrt(Lambda_p)) @ U_p.T
+
+            # Residual
+            recon = proj @ U_p.T
+            residual = w - recon
+            iso = torch.sqrt(eps_p) * residual
+
+            shift = low_rank + iso
+            x_fake = self.mu[p] + shift
+
+            anomalies.append(x_fake)
+
+        return torch.stack(anomalies, dim=1)
+
 class SpatialLowRankGaussian(nn.Module):
     def __init__(self, mu_p = torch.zeros(1), Uk = torch.zeros(1, 1), lambdak = torch.zeros(1), eps = 0, T = 0):
         super().__init__()
@@ -395,9 +530,10 @@ def run(
 
         all_patches = torch.cat(all_patches, dim=0)
 
-        slrg = SpatialLowRankGaussian.fit(all_patches.to(device))
-        os.makedirs("spatial_low_rank_gaussian", exist_ok=True)
-        torch.save(slrg.state_dict(), f"spatial_low_rank_gaussian/{dataset_name}.pt")
+        tslrg = TrueSpatialLowRankGaussian()
+        tslrg.fit(all_patches)
+        os.makedirs("true_spatial_low_rank_gaussian", exist_ok=True)
+        torch.save(tslrg.state_dict(), f"true_spatial_low_rank_gaussian/{dataset_name}.pt")
 
         # lrg = LowRankGaussian.fit(all_patches.to(device))
         # torch.save(lrg.state_dict(), f"low_rank_gaussian/{dataset_name}.pt")

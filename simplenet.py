@@ -207,6 +207,7 @@ class SimpleNet(torch.nn.Module):
 
         self.lgr = None
         self.slrg = None
+        self.tslrg = None
 
         self.variance_mlp = VarianceMLP().to(self.device)
         self.variance_mlp.load_state_dict(torch.load("variance_mlp_25.pth"))
@@ -235,6 +236,16 @@ class SimpleNet(torch.nn.Module):
             ckpt["lambdak"],
             ckpt["eps"].item(),
             ckpt["T"].item(),
+        ).to(self.device)
+
+    def load_true_spatial_low_rank_gaussian(self, dataset_name):
+        ckpt = torch.load(f"true_spatial_low_rank_gaussian/{dataset_name}.pt")
+        self.tslrg = TrueSpatialLowRankGaussian(
+            ckpt["mu"],
+            ckpt["U"],
+            ckpt["Lambda"],
+            ckpt["eps"],
+            ckpt["T"],
         ).to(self.device)
 
     def set_model_dir(self, model_dir, dataset_name):
@@ -620,7 +631,7 @@ class SimpleNet(torch.nn.Module):
 
                     # fake_feats = true_feats + old_noise
 
-                    fake_feats = self.generate_spatial_anomalies(8).reshape(true_feats.shape)
+                    fake_feats = self.tslrg.generate_spatial_anomalies(8).reshape(true_feats.shape)
 
                     scores = self.discriminator(torch.cat([true_feats, fake_feats]))
                     true_scores = scores[:len(true_feats)]
