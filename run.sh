@@ -17,9 +17,9 @@ net \
 --pretrain_embed_dimension 1536 \
 --target_embed_dimension 1536 \
 --patchsize 3 \
---meta_epochs 60 \
+--meta_epochs 40 \
 --embedding_size 256 \
---gan_epochs 8 \
+--gan_epochs 4 \
 --noise_std 0.015 \
 --dsc_hidden 1024 \
 --dsc_layers 2 \

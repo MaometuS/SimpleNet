@@ -4,4 +4,5 @@ variance_mlp/*
 variance_mlp_old/*
 datasets/__pycache__/*
 low_rank_gaussian/*
+spatial_low_rank_gaussian/*
 .idea

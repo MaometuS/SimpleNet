@@ -69,7 +69,7 @@ class SpatialLowRankGaussian(nn.Module):
         scores = term1 + term2
         T = torch.quantile(scores, q)
 
-        return LowRankGaussian(mu_p, Uk, lambdak, float(eps), float(T))
+        return SpatialLowRankGaussian(mu_p, Uk, lambdak, float(eps), float(T))
 
 class LowRankGaussian(nn.Module):
     def __init__(self, mu = torch.zeros(1), Uk = torch.zeros(1, 1), lambdak = torch.zeros(1), eps = 0, T = 0):
@@ -390,14 +390,14 @@ def run(
         for data in dataloaders["training"]:
             with torch.no_grad():
                 embedding = embedder.embed(data["image"].to(device))[0]
-                embedding = embedding.reshape(batch_size, -1, embedding.shape[1])
+                embedding = embedding.reshape(-1, 1296, embedding.shape[1])
             all_patches.append(embedding.cpu())
 
         all_patches = torch.cat(all_patches, dim=0)
 
         slrg = SpatialLowRankGaussian.fit(all_patches.to(device))
         os.makedirs("spatial_low_rank_gaussian", exist_ok=True)
-        torch.save(lrg.state_dict(), f"spatial_low_rank_gaussian/{dataset_name}.pt")
+        torch.save(slrg.state_dict(), f"spatial_low_rank_gaussian/{dataset_name}.pt")
 
         # lrg = LowRankGaussian.fit(all_patches.to(device))
         # torch.save(lrg.state_dict(), f"low_rank_gaussian/{dataset_name}.pt")

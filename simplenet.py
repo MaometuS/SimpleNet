@@ -13,7 +13,7 @@ from collections import OrderedDict
 
 import math
 import numpy as np
-from low_rank_gaussian import LowRankGaussian
+from low_rank_gaussian import LowRankGaussian, SpatialLowRankGaussian
 import torch
 import torch.nn.functional as F
 import tqdm
@@ -485,7 +485,7 @@ class SimpleNet(torch.nn.Module):
         
         return best_record
             
-    def generate_anomailes(total, delta=1.0):
+    def generate_anomailes(self, total, delta=1.0):
         C = self.lrg.mu.shape[0]
 
         u = torch.randn(total, C, device=self.lrg.mu.device)
@@ -507,7 +507,7 @@ class SimpleNet(torch.nn.Module):
 
         return fake_feats
     
-    def generate_spatial_anomalies(B, delta=1.0):
+    def generate_spatial_anomalies(self, B, delta=1.5):
         P, C = self.slrg.mu_p.shape
         total = B * P
 
