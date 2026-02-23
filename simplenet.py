@@ -206,6 +206,7 @@ class SimpleNet(torch.nn.Module):
         self.logger = None
 
         self.lgr = None
+        self.slrg = None
 
         self.variance_mlp = VarianceMLP().to(self.device)
         self.variance_mlp.load_state_dict(torch.load("variance_mlp_25.pth"))
@@ -220,6 +221,16 @@ class SimpleNet(torch.nn.Module):
         ckpt = torch.load(f"low_rank_gaussian/{dataset_name}.pt")
         self.lrg = LowRankGaussian(
             ckpt["mu"],
+            ckpt["Uk"],
+            ckpt["lambdak"],
+            ckpt["eps"].item(),
+            ckpt["T"].item(),
+        ).to(self.device)
+
+    def load_spatial_low_rank_gaussian(self, dataset_name):
+        ckpt = torch.load(f"spatial_low_rank_gaussian/{dataset_name}.pt")
+        self.slrg = SpatialLowRankGaussian(
+            ckpt["mu_p"],
             ckpt["Uk"],
             ckpt["lambdak"],
             ckpt["eps"].item(),
@@ -474,6 +485,51 @@ class SimpleNet(torch.nn.Module):
         
         return best_record
             
+    def generate_anomailes(total, delta=1.0):
+        C = self.lrg.mu.shape[0]
+
+        u = torch.randn(total, C, device=self.lrg.mu.device)
+        u = u / u.norm(dim=1, keepdim=True)
+
+        r = torch.rand(total, device=self.lrg.mu.device) * 1 + torch.sqrt(self.lrg.T)
+
+        w = u * r.unsqueeze(1)
+
+        # Σ^{1/2} w
+        proj = w @ self.lrg.Uk
+        low_rank = (proj * torch.sqrt(self.lrg.lambdak)) @ self.lrg.Uk.T
+
+        recon = proj @ self.lrg.Uk.T
+        residual = w - recon
+        iso = torch.sqrt(self.lrg.eps) * residual
+
+        fake_feats = self.lrg.mu + low_rank + iso
+
+        return fake_feats
+    
+    def generate_spatial_anomalies(B, delta=1.0):
+        P, C = self.slrg.mu_p.shape
+        total = B * P
+
+        u = torch.randn(total, C, device=self.slrg.mu_p.device)
+        u = u / u.norm(dim=1, keepdim=True)
+
+        r = torch.rand(total, device=self.slrg.mu_p.device) * delta + torch.sqrt(self.slrg.T)
+        w = u * r.unsqueeze(1)
+
+        proj = w @ self.slrg.Uk
+        low_rank = (proj * torch.sqrt(self.slrg.lambdak)) @ self.slrg.Uk.T
+
+        recon = proj @ self.slrg.Uk.T
+        residual = w - recon
+        iso = torch.sqrt(self.slrg.eps) * residual
+
+        shift = low_rank + iso
+        shift = shift.reshape(B, P, C)
+
+        x_fake = self.slrg.mu_p.unsqueeze(0) + shift
+
+        return x_fake
 
     def _train_discriminator(self, input_data, current_meta_epoch=1):
         """Computes and sets the support features for SPADE."""
@@ -508,25 +564,6 @@ class SimpleNet(torch.nn.Module):
                         true_feats = self._embed(img, evaluation=False)[0]
 
                     #generate anomalous features
-                    C = self.lrg.mu.shape[0]
-                    total = true_feats.shape[0]
-
-                    u = torch.randn(total, C, device=self.lrg.mu.device)
-                    u = u / u.norm(dim=1, keepdim=True)
-
-                    r = torch.rand(total, device=self.lrg.mu.device) * 1 + torch.sqrt(self.lrg.T)
-
-                    w = u * r.unsqueeze(1)
-
-                    # Σ^{1/2} w
-                    proj = w @ self.lrg.Uk
-                    low_rank = (proj * torch.sqrt(self.lrg.lambdak)) @ self.lrg.Uk.T
-
-                    recon = proj @ self.lrg.Uk.T
-                    residual = w - recon
-                    iso = torch.sqrt(self.lrg.eps) * residual
-
-                    fake_feats = self.lrg.mu + low_rank + iso
 
                     # debatched_true_feats = true_feats.reshape(8, -1, true_feats.shape[1])
                     # with torch.no_grad():
@@ -582,6 +619,8 @@ class SimpleNet(torch.nn.Module):
                     # print("Noise diff: ", noise.mean()-old_noise.mean())
 
                     # fake_feats = true_feats + old_noise
+
+                    fake_feats = self.generate_spatial_anomalies(8).reshape(true_feats.shape)
 
                     scores = self.discriminator(torch.cat([true_feats, fake_feats]))
                     true_scores = scores[:len(true_feats)]

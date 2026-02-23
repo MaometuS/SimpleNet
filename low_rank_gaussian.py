@@ -18,6 +18,59 @@ _DATASETS = {
     "mvtec": ["datasets.mvtec", "MVTecDataset"],
 }
 
+class SpatialLowRankGaussian(nn.Module):
+    def __init__(self, mu_p = torch.zeros(1), Uk = torch.zeros(1, 1), lambdak = torch.zeros(1), eps = 0, T = 0):
+        super().__init__()
+
+        # register as buffers (not trainable, saved in state_dict)
+        self.register_buffer("mu_p", mu_p)
+        self.register_buffer("Uk", Uk)
+        self.register_buffer("lambdak", lambdak)
+        self.register_buffer("eps", torch.tensor(eps))
+        self.register_buffer("T", torch.tensor(T))
+
+    @staticmethod
+    def fit(X, k=64, q=0.995, eps=None):
+        N, P, C = X.shape
+
+        # ----- per-patch mean -----
+        mu_p = X.mean(dim=0)  # [P, C]
+
+        # center per patch
+        Y = X - mu_p.unsqueeze(0)
+
+        # flatten only for covariance
+        Y_flat = Y.reshape(N * P, C)
+
+        # SVD
+        U, S, Vt = torch.linalg.svd(Y_flat, full_matrices=False)
+        lambdas = (S**2) / (Y_flat.shape[0] - 1)
+
+        r = lambdas.shape[0]
+        k = min(k, r)
+
+        Uk = Vt[:k].T
+        lambdak = lambdas[:k]
+
+        if eps is None:
+            if r > k:
+                eps = 0.5 * torch.median(lambdas[k:r])
+            else:
+                eps = 1e-3
+
+        # compute threshold
+        proj = Y_flat @ Uk
+        term1 = (proj**2 / lambdak).sum(dim=1)
+
+        recon = proj @ Uk.T
+        residual = Y_flat - recon
+        term2 = (residual**2).sum(dim=1) / eps
+
+        scores = term1 + term2
+        T = torch.quantile(scores, q)
+
+        return LowRankGaussian(mu_p, Uk, lambdak, float(eps), float(T))
+
 class LowRankGaussian(nn.Module):
     def __init__(self, mu = torch.zeros(1), Uk = torch.zeros(1, 1), lambdak = torch.zeros(1), eps = 0, T = 0):
         super().__init__()
@@ -328,6 +381,7 @@ def run(
     for dataloaders_count, dataloaders in enumerate(list_of_dataloaders):
         dataset_name = dataloaders["training"].name
         imagesize = dataloaders["training"].dataset.imagesize
+        batch_size = dataloaders["training"].batch_size
 
         embedder: simplenet.SimpleNet = methods["get_simplenet"](imagesize, device)[0]
 
@@ -336,12 +390,17 @@ def run(
         for data in dataloaders["training"]:
             with torch.no_grad():
                 embedding = embedder.embed(data["image"].to(device))[0]
+                embedding = embedding.reshape(batch_size, -1, embedding.shape[1])
             all_patches.append(embedding.cpu())
 
         all_patches = torch.cat(all_patches, dim=0)
 
-        lrg = LowRankGaussian.fit(all_patches.to(device))
-        torch.save(lrg.state_dict(), f"low_rank_gaussian/{dataset_name}.pt")
+        slrg = SpatialLowRankGaussian.fit(all_patches.to(device))
+        os.makedirs("spatial_low_rank_gaussian", exist_ok=True)
+        torch.save(lrg.state_dict(), f"spatial_low_rank_gaussian/{dataset_name}.pt")
+
+        # lrg = LowRankGaussian.fit(all_patches.to(device))
+        # torch.save(lrg.state_dict(), f"low_rank_gaussian/{dataset_name}.pt")
 
 
 if __name__ == "__main__":
