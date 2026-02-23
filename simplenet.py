@@ -13,6 +13,7 @@ from collections import OrderedDict
 
 import math
 import numpy as np
+from low_rank_gaussian import LowRankGaussian
 import torch
 import torch.nn.functional as F
 import tqdm
@@ -204,6 +205,8 @@ class SimpleNet(torch.nn.Module):
         self.tau = 1
         self.logger = None
 
+        self.lgr = None
+
         self.variance_mlp = VarianceMLP().to(self.device)
         self.variance_mlp.load_state_dict(torch.load("variance_mlp_25.pth"))
         self.variance_mlp.eval()
@@ -212,6 +215,16 @@ class SimpleNet(torch.nn.Module):
         self.variance_mlp = VarianceMLP().to(self.device)
         self.variance_mlp.load_state_dict(torch.load(f"variance_mlp/{dataset_name}_variance_mlp_25.pth"))
         self.variance_mlp.eval()
+    
+    def load_low_rank_gaussian(self, dataset_name):
+        ckpt = torch.load(f"low_rank_gaussian/{dataset_name}.pt")
+        self.lrg = LowRankGaussian(
+            ckpt["mu"],
+            ckpt["Uk"],
+            ckpt["lambdak"],
+            ckpt["eps"].item(),
+            ckpt["T"].item(),
+        ).to(self.device)
 
     def set_model_dir(self, model_dir, dataset_name):
         self.model_dir = model_dir
@@ -494,16 +507,36 @@ class SimpleNet(torch.nn.Module):
                     else:
                         true_feats = self._embed(img, evaluation=False)[0]
 
+                    #generate anomalous features
+                    C = self.lrg.mu.shape[0]
+                    total = true_feats.shape[0]
 
-                    debatched_true_feats = true_feats.reshape(8, -1, true_feats.shape[1])
-                    with torch.no_grad():
-                        predicted_var = self.variance_mlp(debatched_true_feats)
-                        std = torch.clamp(torch.sqrt(predicted_var + 1e-6), max=10.0)
-                        noise1 = torch.randn_like(debatched_true_feats) * std * 0.005
-                        noise2 = torch.randn_like(debatched_true_feats) * std * 0.01
-                        noise3 = torch.randn_like(debatched_true_feats) * std * 0.025
-                        noise4 = torch.randn_like(debatched_true_feats) * std * 0.05
-                        noise5 = torch.randn_like(debatched_true_feats) * std * 0.1
+                    u = torch.randn(total, C, device=self.lrg.mu.device)
+                    u = u / u.norm(dim=1, keepdim=True)
+
+                    r = torch.rand(total, device=self.lrg.mu.device) * 1 + torch.sqrt(self.lrg.T)
+
+                    w = u * r.unsqueeze(1)
+
+                    # Σ^{1/2} w
+                    proj = w @ self.lrg.Uk
+                    low_rank = (proj * torch.sqrt(self.lrg.lambdak)) @ self.lrg.Uk.T
+
+                    recon = proj @ self.lrg.Uk.T
+                    residual = w - recon
+                    iso = torch.sqrt(self.lrg.eps) * residual
+
+                    fake_feats = self.lrg.mu + low_rank + iso
+
+                    # debatched_true_feats = true_feats.reshape(8, -1, true_feats.shape[1])
+                    # with torch.no_grad():
+                        # predicted_var = self.variance_mlp(debatched_true_feats)
+                        # std = torch.clamp(torch.sqrt(predicted_var + 1e-6), max=10.0)
+                        # noise1 = torch.randn_like(debatched_true_feats) * std * 0.005
+                        # noise2 = torch.randn_like(debatched_true_feats) * std * 0.01
+                        # noise3 = torch.randn_like(debatched_true_feats) * std * 0.025
+                        # noise4 = torch.randn_like(debatched_true_feats) * std * 0.05
+                        # noise5 = torch.randn_like(debatched_true_feats) * std * 0.1
 
                         # predicted_var = self.variance_mlp(debatched_true_feats)
                         # std = torch.clamp(torch.sqrt(predicted_var + 1e-6), max=10.0)
@@ -527,15 +560,15 @@ class SimpleNet(torch.nn.Module):
                         # noise = noise * dir_std
                         # noise = noise.detach()
 
-                    fake_feats1 = (debatched_true_feats + noise1.detach()).reshape(true_feats.shape)
-                    fake_feats2 = (debatched_true_feats + noise2.detach()).reshape(true_feats.shape)
-                    fake_feats3 = (debatched_true_feats + noise3.detach()).reshape(true_feats.shape)
-                    fake_feats4 = (debatched_true_feats + noise4.detach()).reshape(true_feats.shape)
-                    fake_feats5 = (debatched_true_feats + noise5.detach()).reshape(true_feats.shape)
+                    # fake_feats1 = (debatched_true_feats + noise1.detach()).reshape(true_feats.shape)
+                    # fake_feats2 = (debatched_true_feats + noise2.detach()).reshape(true_feats.shape)
+                    # fake_feats3 = (debatched_true_feats + noise3.detach()).reshape(true_feats.shape)
+                    # fake_feats4 = (debatched_true_feats + noise4.detach()).reshape(true_feats.shape)
+                    # fake_feats5 = (debatched_true_feats + noise5.detach()).reshape(true_feats.shape)
 
-                    fake_feats = torch.cat((fake_feats1, fake_feats2, fake_feats3, fake_feats4, fake_feats5), dim=0)
-                    idx = torch.randperm(fake_feats.shape[0])
-                    fake_feats = fake_feats[idx[:true_feats.shape[0]]]
+                    # fake_feats = torch.cat((fake_feats1, fake_feats2, fake_feats3, fake_feats4, fake_feats5), dim=0)
+                    # idx = torch.randperm(fake_feats.shape[0])
+                    # fake_feats = fake_feats[idx[:true_feats.shape[0]]]
 
                     # noise_idxs = torch.randint(0, self.mix_noise, torch.Size([true_feats.shape[0]]))
                     # noise_one_hot = torch.nn.functional.one_hot(noise_idxs, num_classes=self.mix_noise).to(self.device) # (N, K)

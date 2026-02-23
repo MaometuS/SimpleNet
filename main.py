@@ -92,7 +92,8 @@ def run(
             # torch.cuda.empty_cache()
 
             SimpleNet.set_model_dir(os.path.join(models_dir, f"{i}"), dataset_name)
-            SimpleNet.load_variance_mlp(dataset_name)
+            # SimpleNet.load_variance_mlp(dataset_name)
+            SimpleNet.load_low_rank_gaussian(dataset_name)
             if not test:
                 i_auroc, p_auroc, pro_auroc = SimpleNet.train(dataloaders["training"], dataloaders["testing"])
             else:

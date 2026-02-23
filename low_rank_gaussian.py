@@ -19,7 +19,7 @@ _DATASETS = {
 }
 
 class LowRankGaussian(nn.Module):
-    def __init__(self, mu = torch.zeros(1), Uk = torch.zeros(1, 1), lambdak = torch.zeros(1), eps = 0):
+    def __init__(self, mu = torch.zeros(1), Uk = torch.zeros(1, 1), lambdak = torch.zeros(1), eps = 0, T = 0):
         super().__init__()
 
         # register as buffers (not trainable, saved in state_dict)
@@ -27,9 +27,10 @@ class LowRankGaussian(nn.Module):
         self.register_buffer("Uk", Uk)
         self.register_buffer("lambdak", lambdak)
         self.register_buffer("eps", torch.tensor(eps))
+        self.register_buffer("T", torch.tensor(T))
 
     @staticmethod
-    def fit(X, k=64, eps=None):
+    def fit(X, k=64, q=0.995, eps=None):
         """
         X: [N, D] normal samples
         returns LowRankGaussian object
@@ -54,8 +55,19 @@ class LowRankGaussian(nn.Module):
                 eps = 0.5 * torch.median(tail)
             else:
                 eps = 1e-3
+        
+        Y = X - mu
+        proj = Y @ Uk
 
-        return LowRankGaussian(mu, Uk, lambdak, float(eps))
+        term1 = (proj**2 / lambdak).sum(dim=1)
+
+        recon = proj @ Uk.T
+        residual = Y - recon
+        term2 = (residual**2).sum(dim=1) / eps
+
+        T = torch.quantile(term1+term2, q)
+
+        return LowRankGaussian(mu, Uk, lambdak, float(eps), float(T))
 
 @click.group(chain=True)
 @click.option("--results_path", type=str, default="results")
@@ -314,10 +326,6 @@ def run(
     utils.fix_seeds(seed)
 
     for dataloaders_count, dataloaders in enumerate(list_of_dataloaders):
-        model = VarianceMLP().to(device)
-        optimizer = torch.optim.Adam(model.parameters(), lr=1e-4, weight_decay=1e-5)
-        loss_fn = nn.MSELoss()
-
         dataset_name = dataloaders["training"].name
         imagesize = dataloaders["training"].dataset.imagesize
 
@@ -328,13 +336,11 @@ def run(
         for data in dataloaders["training"]:
             with torch.no_grad():
                 embedding = embedder.embed(data["image"].to(device))[0]
-            embedding = embedding.reshape(len(data["image"]), -1, embedding.shape[1])
             all_patches.append(embedding.cpu())
-            all_patches_mean.append(embedding.mean(dim=1))
 
         all_patches = torch.cat(all_patches, dim=0)
 
-        lrg = LowRankGaussian.fit(all_patches)
+        lrg = LowRankGaussian.fit(all_patches.to(device))
         torch.save(lrg.state_dict(), f"low_rank_gaussian/{dataset_name}.pt")
 
 
