@@ -18,7 +18,7 @@ _DATASETS = {
     "mvtec": ["datasets.mvtec", "MVTecDataset"],
 }
 
-class TrueSpatialLowRankGaussian(nn.Module):
+class TrueSpatialLowRankGaussian():
     """
     Spatial Gaussian model with per-patch threshold T_p.
 
@@ -30,8 +30,6 @@ class TrueSpatialLowRankGaussian(nn.Module):
     """
 
     def __init__(self, k=64, quantile=0.99):
-        super.__init__()
-
         self.k = k
         self.quantile = quantile
 
@@ -40,13 +38,6 @@ class TrueSpatialLowRankGaussian(nn.Module):
         self.Lambda = None    # (P, k)
         self.eps = None       # (P,)
         self.T = None         # (P,)   <-- per patch
-
-        self.register_buffer("mu", None)
-        self.register_buffer("U", None)
-        self.register_buffer("Lambda", None)
-        self.register_buffer("eps", None)
-        self.register_buffer("T", None)
-        
 
     # --------------------------------------------------
     # FIT
@@ -120,15 +111,15 @@ class TrueSpatialLowRankGaussian(nn.Module):
             r_p = sqrt(T_p) + delta
         """
         P, C = self.mu.shape
-        device = self.mu.device
+        device = 'cuda:0'
 
         anomalies = []
 
         for p in range(P):
-            U_p = self.U[p]
-            Lambda_p = self.Lambda[p]
-            eps_p = self.eps[p]
-            T_p = self.T[p]
+            U_p = self.U[p].to('cuda:0')
+            Lambda_p = self.Lambda[p].to('cuda:0')
+            eps_p = self.eps[p].to('cuda:0')
+            T_p = self.T[p].to('cuda:0')
 
             # Random direction in C-dim
             u = torch.randn(B, C, device=device)
@@ -147,11 +138,31 @@ class TrueSpatialLowRankGaussian(nn.Module):
             iso = torch.sqrt(eps_p) * residual
 
             shift = low_rank + iso
-            x_fake = self.mu[p] + shift
+            x_fake = self.mu[p].to('cuda:0') + shift
 
             anomalies.append(x_fake)
 
         return torch.stack(anomalies, dim=1)
+
+    def state_dict(self):
+        return {
+            "k": self.k,
+            "quantile": self.quantile,
+            "mu": self.mu,
+            "U": self.U,
+            "Lambda": self.Lambda,
+            "eps": self.eps,
+            "T": self.T,
+        }
+
+    def load_state_dict(self, state):
+        self.k = state["k"]
+        self.quantile = state["quantile"]
+        self.mu = state["mu"]
+        self.U = state["U"]
+        self.Lambda = state["Lambda"]
+        self.eps = state["eps"]
+        self.T = state["T"]
 
 class SpatialLowRankGaussian(nn.Module):
     def __init__(self, mu_p = torch.zeros(1), Uk = torch.zeros(1, 1), lambdak = torch.zeros(1), eps = 0, T = 0):

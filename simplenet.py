@@ -13,7 +13,7 @@ from collections import OrderedDict
 
 import math
 import numpy as np
-from low_rank_gaussian import LowRankGaussian, SpatialLowRankGaussian
+from low_rank_gaussian import LowRankGaussian, SpatialLowRankGaussian, TrueSpatialLowRankGaussian
 import torch
 import torch.nn.functional as F
 import tqdm
@@ -240,13 +240,8 @@ class SimpleNet(torch.nn.Module):
 
     def load_true_spatial_low_rank_gaussian(self, dataset_name):
         ckpt = torch.load(f"true_spatial_low_rank_gaussian/{dataset_name}.pt")
-        self.tslrg = TrueSpatialLowRankGaussian(
-            ckpt["mu"],
-            ckpt["U"],
-            ckpt["Lambda"],
-            ckpt["eps"],
-            ckpt["T"],
-        ).to(self.device)
+        self.tslrg = TrueSpatialLowRankGaussian()
+        self.tslrg.load_state_dict(ckpt)
 
     def set_model_dir(self, model_dir, dataset_name):
         self.model_dir = model_dir
@@ -631,7 +626,9 @@ class SimpleNet(torch.nn.Module):
 
                     # fake_feats = true_feats + old_noise
 
-                    fake_feats = self.tslrg.generate_spatial_anomalies(8).reshape(true_feats.shape)
+                    fake_feats = self.tslrg.generate_anomalies(8).reshape(true_feats.shape)
+                    fake_feats.to(self.device)
+                    true_feats.to(self.device)
 
                     scores = self.discriminator(torch.cat([true_feats, fake_feats]))
                     true_scores = scores[:len(true_feats)]
