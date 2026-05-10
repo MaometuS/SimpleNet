@@ -2,7 +2,7 @@ datapath=/home/maometus/Documents/datasets/mvtec_anomaly_detection
 datasets=('screw' 'pill' 'capsule' 'carpet' 'grid' 'tile' 'wood' 'zipper' 'cable' 'toothbrush' 'transistor' 'metal_nut' 'bottle' 'hazelnut' 'leather')
 dataset_flags=($(for dataset in "${datasets[@]}"; do echo '-d '"${dataset}"; done))
 
-neighborhood=${NEIGHBORHOOD:-1}
+neighborhood=${NEIGHBORHOOD:-3}
 
 python3 low_rank_gaussian.py \
 --gpu 0 \

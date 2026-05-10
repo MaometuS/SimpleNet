@@ -6,4 +6,5 @@ datasets/__pycache__/*
 low_rank_gaussian/*
 spatial_low_rank_gaussian/*
 true_spatial_low_rank_gaussian/*
+true_spatial_low_rank_gaussian_n1/*
 .idea
