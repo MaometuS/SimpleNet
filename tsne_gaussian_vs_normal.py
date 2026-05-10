@@ -67,6 +67,13 @@ def build_embedder(device, imagesize, backbone_name, layers,
     return net
 
 
+def mahal2(x, mu_p, U_p, Lambda_p, eps_p):
+    """Per-sample Mahalanobis^2 under Sigma_p = U Lambda U^T + eps I."""
+    d = x - mu_p
+    proj = d @ U_p
+    return (proj ** 2 / Lambda_p).sum(-1) + ((d - proj @ U_p.T) ** 2).sum(-1) / eps_p
+
+
 def collect_patch_features(embedder, dataloader, device, patch_idx, p_total):
     """Run embedder on the dataset and collect features at one patch index.
 
@@ -134,9 +141,12 @@ def main(classname, patch_idx, data_path, gaussian_dir, backbone_name, layers,
     if not (0 <= patch_idx < P):
         raise ValueError(f"patch_idx must be in [0, {P-1}], got {patch_idx}")
 
-    eps_p = tslrg.eps[patch_idx]
-    T_p = tslrg.T[patch_idx]
-    k_p = tslrg.U[patch_idx].shape[1]
+    mu_p = tslrg.mu[patch_idx].to(device)
+    U_p = tslrg.U[patch_idx].to(device)
+    Lambda_p = tslrg.Lambda[patch_idx].to(device)
+    eps_p = tslrg.eps[patch_idx].to(device)
+    T_p = tslrg.T[patch_idx].to(device)
+    k_p = U_p.shape[1]
 
     print(f"[load] class={classname} patch={patch_idx}/{P-1}  C={C}  k={k_p}")
     print(f"[load] eps_p={eps_p.item():.4g}  T_p={T_p.item():.4g}")
@@ -202,13 +212,45 @@ def main(classname, patch_idx, data_path, gaussian_dir, backbone_name, layers,
               init="pca", random_state=seed).fit_transform(X)
 
     colors = {0: "tab:blue", 1: "tab:orange", 2: "tab:red"}
-    plt.figure(figsize=(8, 6))
+    fig, (ax_tsne, ax_hist) = plt.subplots(1, 2, figsize=(14, 6))
+
     for cls in sorted(legend):
         m = y == cls
-        plt.scatter(X2[m, 0], X2[m, 1], s=8, alpha=0.5,
-                    c=colors[cls], label=legend[cls])
-    plt.title(f"t-SNE — class={classname}  patch={patch_idx}")
-    plt.legend(loc="best")
+        ax_tsne.scatter(X2[m, 0], X2[m, 1], s=8, alpha=0.5,
+                        c=colors[cls], label=legend[cls])
+    ax_tsne.set_title(f"t-SNE — class={classname}  patch={patch_idx}")
+    ax_tsne.legend(loc="best")
+
+    with torch.no_grad():
+        m2_groups = {
+            0: mahal2(normal.to(device), mu_p, U_p, Lambda_p, eps_p).cpu().numpy(),
+            1: mahal2(gauss.to(device), mu_p, U_p, Lambda_p, eps_p).cpu().numpy(),
+        }
+        if num_boundary_samples > 0:
+            m2_groups[2] = mahal2(bdry.to(device), mu_p, U_p, Lambda_p, eps_p).cpu().numpy()
+
+    all_vals = np.concatenate(list(m2_groups.values()))
+    lo = max(all_vals.min(), 1e-3)
+    hi = all_vals.max()
+    bins = np.logspace(np.log10(lo), np.log10(hi), 60)
+    for cls in sorted(m2_groups):
+        ax_hist.hist(m2_groups[cls], bins=bins, alpha=0.5,
+                     color=colors[cls], label=legend[cls], density=True)
+    ax_hist.axvline(T_p.item(), color="k", linestyle="--",
+                    label=f"T_p={T_p.item():.3g}")
+    ax_hist.axvline(C, color="gray", linestyle=":",
+                    label=f"C={C}")
+    ax_hist.set_xscale("log")
+    ax_hist.set_xlabel("Mahalanobis$^2$")
+    ax_hist.set_ylabel("density")
+    ax_hist.set_title("Mahalanobis$^2$ under fitted $\\Sigma_p$")
+    ax_hist.legend(loc="best", fontsize=8)
+
+    for cls, label in legend.items():
+        v = m2_groups[cls]
+        print(f"[mahal2] {label}: mean={v.mean():.3g}  median={np.median(v):.3g}  "
+              f"min={v.min():.3g}  max={v.max():.3g}")
+
     plt.tight_layout()
 
     if output is None:
