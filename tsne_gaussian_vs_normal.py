@@ -111,6 +111,10 @@ def collect_patch_features(embedder, dataloader, device, patch_idx, p_total):
 @click.option("--num_boundary_samples", default=0, type=int,
               help="If > 0, also plot anomaly samples on the per-patch boundary")
 @click.option("--boundary_delta", default=1.0, type=float)
+@click.option("--anomaly_mode", default="default",
+              type=click.Choice(["default", "subspace", "anchored"]),
+              help="default=PDF (full-sphere), subspace=in-U_k only, "
+                   "anchored=fresh-normal + in-U_k shift")
 @click.option("--max_normal", default=2000, type=int,
               help="Cap on real normal features to keep t-SNE fast")
 @click.option("--pca_dim", default=50, type=int)
@@ -121,8 +125,8 @@ def collect_patch_features(embedder, dataloader, device, patch_idx, p_total):
 def main(classname, patch_idx, data_path, gaussian_dir, backbone_name, layers,
          pretrain_dim, target_dim, patchsize, embedding_size, resize,
          imagesize_int, batch_size, num_workers, num_gaussian_samples,
-         num_boundary_samples, boundary_delta, max_normal, pca_dim, perplexity,
-         seed, gpu, output):
+         num_boundary_samples, boundary_delta, anomaly_mode, max_normal,
+         pca_dim, perplexity, seed, gpu, output):
 
     utils.fix_seeds(seed)
     device = utils.set_torch_device([gpu])
@@ -191,12 +195,18 @@ def main(classname, patch_idx, data_path, gaussian_dir, backbone_name, layers,
               1: f"gaussian samples (n={gauss.shape[0]})"}
 
     if num_boundary_samples > 0:
+        anchor_arg = None
+        if anomaly_mode == "anchored":
+            # Sample real normal features (with replacement) to use as anchors.
+            idx = torch.randint(0, normal.shape[0], (num_boundary_samples,))
+            anchor_arg = normal[idx].to(device)
         bdry = tslrg.generate_anomaly_at_patch(
-            patch_idx, num_boundary_samples, delta=boundary_delta
+            patch_idx, num_boundary_samples, delta=boundary_delta,
+            mode=anomaly_mode, anchor=anchor_arg,
         ).cpu()
         pieces.append(bdry)
         labels += [2] * bdry.shape[0]
-        legend[2] = f"boundary anomalies (delta={boundary_delta})"
+        legend[2] = f"boundary anomalies ({anomaly_mode}, delta={boundary_delta})"
 
     X = torch.cat(pieces, dim=0).numpy()
     y = np.array(labels)

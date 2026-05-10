@@ -155,23 +155,64 @@ class TrueSpatialLowRankGaussian():
         return low_rank + iso
 
     @torch.no_grad()
-    def generate_anomaly_at_patch(self, p, B, delta=1):
+    def generate_anomaly_at_patch(self, p, B, delta=1, mode="default", anchor=None):
         """
-        Generate B anomalies just outside patch p's Mahalanobis boundary.
-        Mahalanobis radius: r ~ U(sqrt(T_p), sqrt(T_p) + delta).
+        Generate B anomalies for patch p.
+
+        mode="default":
+            PDF formulation. Sample u uniform on the unit C-sphere, set
+            radius r in [sqrt(T_p), sqrt(T_p)+delta], map x = mu + Sigma^(1/2)(r u).
+            Anomaly mass is dominated by the orthogonal subspace (where eps lives).
+
+        mode="subspace":
+            Sample direction in U_p subspace only (k-dim sphere). Anomaly sits on a
+            Mahalanobis ellipse inside the data-variation subspace, structurally
+            matching real defects. anchor is ignored.
+
+        mode="anchored":
+            Add an in-U_p shift to a REAL normal feature passed via anchor.
+            anchor must be shape (B, C). Combines (1)'s direction geometry with
+            anchoring to the actual data manifold (not a Gaussian draw).
+
         Returns: (B, C)
         """
         device = 'cuda:0'
         C = self.mu.shape[1]
+        U_p = self.U[p].to(device)         # (C, k)
+        Lambda_p = self.Lambda[p].to(device)  # (k,)
         T_p = self.T[p].to(device)
+        k = U_p.shape[1]
 
-        u = torch.randn(B, C, device=device)
-        u = u / u.norm(dim=1, keepdim=True)
+        if mode == "default":
+            u = torch.randn(B, C, device=device)
+            u = u / u.norm(dim=1, keepdim=True)
+            r = torch.sqrt(T_p) + delta * torch.rand(B, 1, device=device)
+            w = u * r
+            return self.mu[p].to(device) + self._sigma_half_w(p, w, device)
 
-        r = torch.sqrt(T_p) + delta * torch.rand(B, 1, device=device)
-        w = u * r
+        if mode in ("subspace", "anchored"):
+            v_k = torch.randn(B, k, device=device)
+            v_k = v_k / v_k.norm(dim=1, keepdim=True)        # unit in k-dim
+            r = torch.sqrt(T_p) + delta * torch.rand(B, 1, device=device)
+            shift = (r * v_k * torch.sqrt(Lambda_p)) @ U_p.T  # in U_p subspace
 
-        return self.mu[p].to(device) + self._sigma_half_w(p, w, device)
+            if mode == "subspace":
+                return self.mu[p].to(device) + shift
+
+            # mode == "anchored"
+            if anchor is None:
+                raise ValueError(
+                    "mode='anchored' requires `anchor` of shape (B, C) — "
+                    "real normal features to perturb."
+                )
+            if anchor.shape != (B, C):
+                raise ValueError(
+                    f"anchor shape {tuple(anchor.shape)} != expected ({B}, {C})"
+                )
+            return anchor.to(device) + shift
+
+        raise ValueError(f"unknown mode {mode!r}; expected one of "
+                         "'default', 'subspace', 'anchored'")
 
     @torch.no_grad()
     def generate_normal_at_patch(self, p, B):
@@ -190,11 +231,29 @@ class TrueSpatialLowRankGaussian():
     # BULK SAMPLING (all patches)
     # --------------------------------------------------
     @torch.no_grad()
-    def generate_anomalies(self, B, delta=1):
-        """Generate anomalies just outside each patch's boundary. Returns (B, P, C)."""
+    def generate_anomalies(self, B, delta=1, mode="default", anchors=None):
+        """
+        Generate anomalies for every patch. Returns (B, P, C).
+        See generate_anomaly_at_patch for `mode`. `anchors` (B, P, C) is required
+        when mode='anchored' and ignored otherwise.
+        """
         P = self.mu.shape[0]
+        if mode == "anchored":
+            if anchors is None:
+                raise ValueError("mode='anchored' requires `anchors` (B, P, C)")
+            if anchors.shape[:2] != (B, P):
+                raise ValueError(
+                    f"anchors leading shape {tuple(anchors.shape[:2])} != ({B}, {P})"
+                )
         return torch.stack(
-            [self.generate_anomaly_at_patch(p, B, delta) for p in range(P)], dim=1
+            [
+                self.generate_anomaly_at_patch(
+                    p, B, delta, mode=mode,
+                    anchor=anchors[:, p, :] if anchors is not None else None,
+                )
+                for p in range(P)
+            ],
+            dim=1,
         )
 
     @torch.no_grad()

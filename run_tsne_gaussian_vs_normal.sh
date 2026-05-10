@@ -14,6 +14,7 @@ patch_idx=${2:-${PATCH_IDX:-666}}
 num_gaussian_samples=${NUM_GAUSSIAN_SAMPLES:-250}
 num_boundary_samples=${NUM_BOUNDARY_SAMPLES:-200}
 boundary_delta=${BOUNDARY_DELTA:-2.0}
+anomaly_mode=${ANOMALY_MODE:-default}
 
 python3 tsne_gaussian_vs_normal.py \
 --classname "$classname" \
@@ -34,5 +35,6 @@ python3 tsne_gaussian_vs_normal.py \
 --num_gaussian_samples "$num_gaussian_samples" \
 --num_boundary_samples "$num_boundary_samples" \
 --boundary_delta "$boundary_delta" \
+--anomaly_mode "$anomaly_mode" \
 --seed 0 \
 --gpu 0

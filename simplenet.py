@@ -208,6 +208,10 @@ class SimpleNet(torch.nn.Module):
         self.lgr = None
         self.slrg = None
         self.tslrg = None
+        # Anomaly-generation mode for TrueSpatialLowRankGaussian.
+        # "default": PDF formulation (full-sphere). "subspace": in-U_k only.
+        # "anchored": real-normal anchor + in-U_k shift. Override via env var.
+        self.tslrg_anomaly_mode = os.environ.get("TSLRG_ANOMALY_MODE", "default")
 
         self.variance_mlp = VarianceMLP().to(self.device)
         self.variance_mlp.load_state_dict(torch.load("variance_mlp_25.pth"))
@@ -626,7 +630,18 @@ class SimpleNet(torch.nn.Module):
 
                     # fake_feats = true_feats + old_noise
 
-                    fake_feats = self.tslrg.generate_anomalies(8).reshape(true_feats.shape)
+                    P = self.tslrg.mu.shape[0]
+                    C = true_feats.shape[1]
+                    B = true_feats.shape[0] // P
+                    if self.tslrg_anomaly_mode == "anchored":
+                        anchors = true_feats.detach().reshape(B, P, C)
+                        fake_feats = self.tslrg.generate_anomalies(
+                            B, mode="anchored", anchors=anchors
+                        ).reshape(true_feats.shape)
+                    else:
+                        fake_feats = self.tslrg.generate_anomalies(
+                            B, mode=self.tslrg_anomaly_mode
+                        ).reshape(true_feats.shape)
                     fake_feats.to(self.device)
                     true_feats.to(self.device)
 
