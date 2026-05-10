@@ -27,77 +27,98 @@ class TrueSpatialLowRankGaussian():
 
     Sigma_p = U_p Lambda_p U_p^T + eps_p I
     T_p = quantile of Mahalanobis at patch p
+
+    With neighborhood w > 1, Sigma_p is estimated by pooling centered features
+    from a w x w window around p (truncated at the grid edge). Means and
+    thresholds remain per-patch. Sample count per fit grows from N to ~N*w^2,
+    which makes the rank-k+isotropic estimator far better-conditioned.
     """
 
-    def __init__(self, k=64, quantile=0.99):
+    def __init__(self, k=64, quantile=0.99, neighborhood=1):
         self.k = k
         self.quantile = quantile
+        self.neighborhood = int(neighborhood)
+        if self.neighborhood < 1:
+            raise ValueError("neighborhood must be >= 1")
 
-        self.mu = None        # (P, C)
-        self.U = None         # (P, C, k)
-        self.Lambda = None    # (P, k)
-        self.eps = None       # (P,)
-        self.T = None         # (P,)   <-- per patch
+        self.mu = None            # (P, C)
+        self.U = None             # (P, C, k)
+        self.Lambda = None        # (P, k)
+        self.eps = None           # (P,)
+        self.T = None             # (P,)
+        self.spatial_shape = None # (H, W)
 
     # --------------------------------------------------
     # FIT
     # --------------------------------------------------
     @torch.no_grad()
-    def fit(self, X):
+    def fit(self, X, spatial_shape=None):
         """
-        X: (N, P, C)
+        X: (N, P, C). spatial_shape=(H, W); inferred as (sqrt(P), sqrt(P)) if None.
         """
         N, P, C = X.shape
 
-        mu = X.mean(dim=0)
-        Xc = X - mu.unsqueeze(0)
+        if spatial_shape is None:
+            H = int(round(P ** 0.5))
+            if H * H != P:
+                raise ValueError(
+                    f"P={P} is not a perfect square; pass spatial_shape explicitly"
+                )
+            W = H
+        else:
+            H, W = spatial_shape
+            if H * W != P:
+                raise ValueError(f"spatial_shape {(H, W)} inconsistent with P={P}")
 
-        U_list = []
-        Lambda_list = []
-        eps_list = []
-        T_list = []
+        mu = X.mean(dim=0)                              # (P, C)
+        Xc = (X - mu.unsqueeze(0)).reshape(N, H, W, C)  # centered, gridded
 
-        for p in range(P):
-            Yp = Xc[:, p, :]  # (N, C)
+        win = self.neighborhood
+        half = win // 2
 
-            # SVD
-            U_svd, S_svd, Vh = torch.linalg.svd(Yp, full_matrices=False)
+        U_list, Lambda_list, eps_list, T_list = [], [], [], []
 
-            eigvals = (S_svd ** 2) / (N - 1)
-            r = eigvals.shape[0]
-            k_eff = min(self.k, r)
+        for i in range(H):
+            for j in range(W):
+                # Pool centered features from w x w window (truncated at edges)
+                i0, i1 = max(0, i - half), min(H, i + half + 1)
+                j0, j1 = max(0, j - half), min(W, j + half + 1)
+                Yp = Xc[:, i0:i1, j0:j1, :].reshape(-1, C)  # (N * win_count, C)
 
-            V_k = Vh[:k_eff].T
-            Lambda_k = eigvals[:k_eff]
+                _, S_svd, Vh = torch.linalg.svd(Yp, full_matrices=False)
 
-            # Paper epsilon: 0.5 * median of trailing eigenvalues, else 1e-2
-            if k_eff < r:
-                eps_p = 0.5 * torch.median(eigvals[k_eff:])
-            else:
-                eps_p = torch.tensor(1e-2, device=X.device)
+                eigvals = (S_svd ** 2) / (Yp.shape[0] - 1)
+                r = eigvals.shape[0]
+                k_eff = min(self.k, r)
 
-            # ---- Compute Mahalanobis for this patch ----
-            d = Yp  # already centered
-            proj = d @ V_k
-            term1 = (proj ** 2 / Lambda_k).sum(dim=1)
+                V_k = Vh[:k_eff].T
+                Lambda_k = eigvals[:k_eff]
 
-            residual = d - proj @ V_k.T
-            term2 = (residual ** 2).sum(dim=1) / eps_p
+                if k_eff < r:
+                    eps_p = 0.5 * torch.median(eigvals[k_eff:])
+                else:
+                    eps_p = torch.tensor(1e-2, device=X.device)
 
-            scores_p = term1 + term2
+                # Threshold is computed from the patch's OWN samples under (V_k, Lambda_k, eps_p)
+                d = Xc[:, i, j, :]  # (N, C), already centered by mu_p
+                proj = d @ V_k
+                term1 = (proj ** 2 / Lambda_k).sum(dim=1)
+                residual = d - proj @ V_k.T
+                term2 = (residual ** 2).sum(dim=1) / eps_p
+                scores_p = term1 + term2
+                T_p = torch.quantile(scores_p, self.quantile)
 
-            T_p = torch.quantile(scores_p, self.quantile)
-
-            U_list.append(V_k)
-            Lambda_list.append(Lambda_k)
-            eps_list.append(eps_p)
-            T_list.append(T_p)
+                U_list.append(V_k)
+                Lambda_list.append(Lambda_k)
+                eps_list.append(eps_p)
+                T_list.append(T_p)
 
         self.mu = mu
         self.U = torch.stack(U_list, dim=0)
         self.Lambda = torch.stack(Lambda_list, dim=0)
         self.eps = torch.stack(eps_list, dim=0)
-        self.T = torch.stack(T_list, dim=0)  # (P,)
+        self.T = torch.stack(T_list, dim=0)
+        self.spatial_shape = (H, W)
 
     # --------------------------------------------------
     # PER-PATCH SAMPLING
@@ -172,6 +193,8 @@ class TrueSpatialLowRankGaussian():
         return {
             "k": self.k,
             "quantile": self.quantile,
+            "neighborhood": self.neighborhood,
+            "spatial_shape": self.spatial_shape,
             "mu": self.mu,
             "U": self.U,
             "Lambda": self.Lambda,
@@ -182,6 +205,8 @@ class TrueSpatialLowRankGaussian():
     def load_state_dict(self, state):
         self.k = state["k"]
         self.quantile = state["quantile"]
+        self.neighborhood = state.get("neighborhood", 1)
+        self.spatial_shape = state.get("spatial_shape", None)
         self.mu = state["mu"]
         self.U = state["U"]
         self.Lambda = state["Lambda"]
@@ -300,6 +325,9 @@ class LowRankGaussian(nn.Module):
 @click.option("--log_project", type=str, default="project")
 @click.option("--run_name", type=str, default="test")
 @click.option("--test", type=str, default="ckpt")
+@click.option("--neighborhood", type=int, default=1, show_default=True,
+              help="Window size for tied-covariance pooling. 1=per-patch (current), "
+                   "3 or 5 share covariance with spatial neighbors.")
 def main(**kwargs):
     pass
 
@@ -539,6 +567,7 @@ def run(
         seed,
         test,
         gpu,
+        neighborhood,
 ):
     methods = {key: item for (key, item) in methods}
 
@@ -565,7 +594,7 @@ def run(
 
         all_patches = torch.cat(all_patches, dim=0)
 
-        tslrg = TrueSpatialLowRankGaussian()
+        tslrg = TrueSpatialLowRankGaussian(neighborhood=neighborhood)
         tslrg.fit(all_patches)
         os.makedirs("true_spatial_low_rank_gaussian", exist_ok=True)
         torch.save(tslrg.state_dict(), f"true_spatial_low_rank_gaussian/{dataset_name}.pt")
