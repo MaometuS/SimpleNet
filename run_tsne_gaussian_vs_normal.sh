@@ -9,10 +9,10 @@
 
 datapath=/home/maometus/Documents/datasets/mvtec_anomaly_detection
 
-classname=${1:-${CLASSNAME:-screw}}
-patch_idx=${2:-${PATCH_IDX:-648}}
+classname=${1:-${CLASSNAME:-carpet}}
+patch_idx=${2:-${PATCH_IDX:-666}}
 num_gaussian_samples=${NUM_GAUSSIAN_SAMPLES:-1000}
-num_boundary_samples=${NUM_BOUNDARY_SAMPLES:-0}
+num_boundary_samples=${NUM_BOUNDARY_SAMPLES:-200}
 boundary_delta=${BOUNDARY_DELTA:-1.0}
 
 python3 tsne_gaussian_vs_normal.py \
