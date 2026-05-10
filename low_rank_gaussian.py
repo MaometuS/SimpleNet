@@ -76,14 +76,23 @@ class TrueSpatialLowRankGaussian():
         win = self.neighborhood
         half = win // 2
 
+        # Reflection-pad the grid so every patch has a full w x w window.
+        # This keeps k_eff uniform across patches (corners/edges no longer truncate).
+        if half > 0:
+            Xc_pad = F.pad(
+                Xc.permute(0, 3, 1, 2),       # (N, C, H, W)
+                [half, half, half, half],
+                mode="reflect",
+            ).permute(0, 2, 3, 1)             # (N, H+2*half, W+2*half, C)
+        else:
+            Xc_pad = Xc
+
         U_list, Lambda_list, eps_list, T_list = [], [], [], []
 
         for i in range(H):
             for j in range(W):
-                # Pool centered features from w x w window (truncated at edges)
-                i0, i1 = max(0, i - half), min(H, i + half + 1)
-                j0, j1 = max(0, j - half), min(W, j + half + 1)
-                Yp = Xc[:, i0:i1, j0:j1, :].reshape(-1, C)  # (N * win_count, C)
+                # Always-full w x w window in the padded grid.
+                Yp = Xc_pad[:, i:i + win, j:j + win, :].reshape(-1, C)  # (N * win^2, C)
 
                 _, S_svd, Vh = torch.linalg.svd(Yp, full_matrices=False)
 
