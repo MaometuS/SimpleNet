@@ -34,7 +34,7 @@ class TrueSpatialLowRankGaussian():
     which makes the rank-k+isotropic estimator far better-conditioned.
     """
 
-    def __init__(self, k=64, quantile=0.99, neighborhood=1, eps_method="ppca"):
+    def __init__(self, k=256, quantile=0.99, neighborhood=1, eps_method="ppca"):
         self.k = k
         self.quantile = quantile
         self.neighborhood = int(neighborhood)
