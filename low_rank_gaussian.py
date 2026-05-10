@@ -34,12 +34,16 @@ class TrueSpatialLowRankGaussian():
     which makes the rank-k+isotropic estimator far better-conditioned.
     """
 
-    def __init__(self, k=64, quantile=0.99, neighborhood=1):
+    def __init__(self, k=64, quantile=0.99, neighborhood=1, eps_method="ppca"):
         self.k = k
         self.quantile = quantile
         self.neighborhood = int(neighborhood)
         if self.neighborhood < 1:
             raise ValueError("neighborhood must be >= 1")
+        if eps_method not in ("ppca", "median"):
+            raise ValueError("eps_method must be 'ppca' (mean of trailing) "
+                             "or 'median' (PDF default 0.5 * median)")
+        self.eps_method = eps_method
 
         self.mu = None            # (P, C)
         self.U = None             # (P, C, k)
@@ -104,7 +108,10 @@ class TrueSpatialLowRankGaussian():
                 Lambda_k = eigvals[:k_eff]
 
                 if k_eff < r:
-                    eps_p = 0.5 * torch.median(eigvals[k_eff:])
+                    if self.eps_method == "ppca":
+                        eps_p = torch.mean(eigvals[k_eff:])
+                    else:
+                        eps_p = 0.5 * torch.median(eigvals[k_eff:])
                 else:
                     eps_p = torch.tensor(1e-2, device=X.device)
 
@@ -204,6 +211,7 @@ class TrueSpatialLowRankGaussian():
             "quantile": self.quantile,
             "neighborhood": self.neighborhood,
             "spatial_shape": self.spatial_shape,
+            "eps_method": self.eps_method,
             "mu": self.mu,
             "U": self.U,
             "Lambda": self.Lambda,
@@ -216,6 +224,7 @@ class TrueSpatialLowRankGaussian():
         self.quantile = state["quantile"]
         self.neighborhood = state.get("neighborhood", 1)
         self.spatial_shape = state.get("spatial_shape", None)
+        self.eps_method = state.get("eps_method", "median")
         self.mu = state["mu"]
         self.U = state["U"]
         self.Lambda = state["Lambda"]
