@@ -100,49 +100,73 @@ class TrueSpatialLowRankGaussian():
         self.T = torch.stack(T_list, dim=0)  # (P,)
 
     # --------------------------------------------------
-    # GENERATE ANOMALIES (per patch T)
+    # PER-PATCH SAMPLING
+    # --------------------------------------------------
+    @torch.no_grad()
+    def _sigma_half_w(self, p, w, device):
+        """Apply Sigma_p^(1/2) to w. w: (B, C). Returns (B, C)."""
+        U_p = self.U[p].to(device)
+        Lambda_p = self.Lambda[p].to(device)
+        eps_p = self.eps[p].to(device)
+
+        proj = w @ U_p
+        low_rank = (proj * torch.sqrt(Lambda_p)) @ U_p.T
+        recon = proj @ U_p.T
+        residual = w - recon
+        iso = torch.sqrt(eps_p) * residual
+
+        return low_rank + iso
+
+    @torch.no_grad()
+    def generate_anomaly_at_patch(self, p, B, delta=1):
+        """
+        Generate B anomalies just outside patch p's Mahalanobis boundary.
+        Mahalanobis radius: r ~ U(sqrt(T_p), sqrt(T_p) + delta).
+        Returns: (B, C)
+        """
+        device = 'cuda:0'
+        C = self.mu.shape[1]
+        T_p = self.T[p].to(device)
+
+        u = torch.randn(B, C, device=device)
+        u = u / u.norm(dim=1, keepdim=True)
+
+        r = torch.sqrt(T_p) + delta * torch.rand(B, 1, device=device)
+        w = u * r
+
+        return self.mu[p].to(device) + self._sigma_half_w(p, w, device)
+
+    @torch.no_grad()
+    def generate_normal_at_patch(self, p, B):
+        """
+        Draw B samples from N(mu_p, Sigma_p).
+        Returns: (B, C)
+        """
+        device = 'cuda:0'
+        C = self.mu.shape[1]
+
+        w = torch.randn(B, C, device=device)
+
+        return self.mu[p].to(device) + self._sigma_half_w(p, w, device)
+
+    # --------------------------------------------------
+    # BULK SAMPLING (all patches)
     # --------------------------------------------------
     @torch.no_grad()
     def generate_anomalies(self, B, delta=1):
-        """
-        Generate anomalies just outside each patch's boundary.
+        """Generate anomalies just outside each patch's boundary. Returns (B, P, C)."""
+        P = self.mu.shape[0]
+        return torch.stack(
+            [self.generate_anomaly_at_patch(p, B, delta) for p in range(P)], dim=1
+        )
 
-        Mahalanobis radius:
-            r_p = sqrt(T_p) + delta
-        """
-        P, C = self.mu.shape
-        device = 'cuda:0'
-
-        anomalies = []
-
-        for p in range(P):
-            U_p = self.U[p].to('cuda:0')
-            Lambda_p = self.Lambda[p].to('cuda:0')
-            eps_p = self.eps[p].to('cuda:0')
-            T_p = self.T[p].to('cuda:0')
-
-            # Random direction in C-dim
-            u = torch.randn(B, C, device=device)
-            u = u / u.norm(dim=1, keepdim=True)
-
-            r = torch.sqrt(T_p) + delta * torch.rand(B, 1, device=device)
-            w = u * r
-
-            # Low-rank component
-            proj = w @ U_p
-            low_rank = (proj * torch.sqrt(Lambda_p)) @ U_p.T
-
-            # Residual
-            recon = proj @ U_p.T
-            residual = w - recon
-            iso = torch.sqrt(eps_p) * residual
-
-            shift = low_rank + iso
-            x_fake = self.mu[p].to('cuda:0') + shift
-
-            anomalies.append(x_fake)
-
-        return torch.stack(anomalies, dim=1)
+    @torch.no_grad()
+    def generate_normal_features(self, B):
+        """Draw B samples per patch from N(mu_p, Sigma_p). Returns (B, P, C)."""
+        P = self.mu.shape[0]
+        return torch.stack(
+            [self.generate_normal_at_patch(p, B) for p in range(P)], dim=1
+        )
 
     def state_dict(self):
         return {

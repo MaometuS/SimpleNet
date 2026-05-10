@@ -81,35 +81,6 @@ def collect_patch_features(embedder, dataloader, device, patch_idx, p_total):
     return torch.cat(feats, dim=0)
 
 
-def sample_gaussian(mu_p, U_p, Lambda_p, eps_p, n, device):
-    """Draw n samples from N(mu_p, U_p diag(Lambda_p) U_p^T + eps_p I).
-
-    Cov decomposes as in-subspace (U Lambda U^T) plus full-isotropic eps I.
-    Sampling x = mu + U diag(sqrt(lambda)) z_k + sqrt(eps) z_full
-    yields exactly that covariance.
-    """
-    C, k = U_p.shape
-    z_k = torch.randn(n, k, device=device)
-    in_sub = (z_k * torch.sqrt(Lambda_p)) @ U_p.T
-    z_full = torch.randn(n, C, device=device) * torch.sqrt(eps_p)
-    return mu_p + in_sub + z_full
-
-
-def sample_boundary(mu_p, U_p, Lambda_p, eps_p, T_p, n, delta, device):
-    """Mirror TrueSpatialLowRankGaussian.generate_anomalies for one patch."""
-    C = mu_p.shape[0]
-    u = torch.randn(n, C, device=device)
-    u = u / u.norm(dim=1, keepdim=True)
-    r = torch.sqrt(T_p) + delta
-    w = u * r
-    proj = w @ U_p
-    low_rank = (proj * torch.sqrt(Lambda_p)) @ U_p.T
-    recon = proj @ U_p.T
-    residual = w - recon
-    iso = torch.sqrt(eps_p) * residual
-    return mu_p + low_rank + iso
-
-
 @click.command()
 @click.option("--classname", required=True, type=str,
               help="MVTec subdataset name, e.g. screw")
@@ -163,13 +134,11 @@ def main(classname, patch_idx, data_path, gaussian_dir, backbone_name, layers,
     if not (0 <= patch_idx < P):
         raise ValueError(f"patch_idx must be in [0, {P-1}], got {patch_idx}")
 
-    mu_p = tslrg.mu[patch_idx].to(device)
-    U_p = tslrg.U[patch_idx].to(device)
-    Lambda_p = tslrg.Lambda[patch_idx].to(device)
-    eps_p = tslrg.eps[patch_idx].to(device)
-    T_p = tslrg.T[patch_idx].to(device)
+    eps_p = tslrg.eps[patch_idx]
+    T_p = tslrg.T[patch_idx]
+    k_p = tslrg.U[patch_idx].shape[1]
 
-    print(f"[load] class={classname} patch={patch_idx}/{P-1}  C={C}  k={U_p.shape[1]}")
+    print(f"[load] class={classname} patch={patch_idx}/{P-1}  C={C}  k={k_p}")
     print(f"[load] eps_p={eps_p.item():.4g}  T_p={T_p.item():.4g}")
 
     train_dataset = MVTecDataset(
@@ -201,9 +170,7 @@ def main(classname, patch_idx, data_path, gaussian_dir, backbone_name, layers,
         idx = torch.randperm(normal.shape[0])[:max_normal]
         normal = normal[idx]
 
-    with torch.no_grad():
-        gauss = sample_gaussian(mu_p, U_p, Lambda_p, eps_p,
-                                num_gaussian_samples, device).cpu()
+    gauss = tslrg.generate_normal_at_patch(patch_idx, num_gaussian_samples).cpu()
 
     pieces = [normal, gauss]
     labels = (
@@ -214,10 +181,9 @@ def main(classname, patch_idx, data_path, gaussian_dir, backbone_name, layers,
               1: f"gaussian samples (n={gauss.shape[0]})"}
 
     if num_boundary_samples > 0:
-        with torch.no_grad():
-            bdry = sample_boundary(mu_p, U_p, Lambda_p, eps_p, T_p,
-                                   num_boundary_samples, boundary_delta,
-                                   device).cpu()
+        bdry = tslrg.generate_anomaly_at_patch(
+            patch_idx, num_boundary_samples, delta=boundary_delta
+        ).cpu()
         pieces.append(bdry)
         labels += [2] * bdry.shape[0]
         legend[2] = f"boundary anomalies (delta={boundary_delta})"
