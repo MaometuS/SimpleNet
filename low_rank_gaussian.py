@@ -70,11 +70,11 @@ class TrueSpatialLowRankGaussian():
             V_k = Vh[:k_eff].T
             Lambda_k = eigvals[:k_eff]
 
-            # Paper epsilon
+            # Paper epsilon: 0.5 * median of trailing eigenvalues, else 1e-2
             if k_eff < r:
-                eps_p = eigvals[k_eff:].mean()
+                eps_p = 0.5 * torch.median(eigvals[k_eff:])
             else:
-                eps_p = torch.tensor(1e-6, device=X.device)
+                eps_p = torch.tensor(1e-2, device=X.device)
 
             # ---- Compute Mahalanobis for this patch ----
             d = Yp  # already centered
@@ -125,7 +125,7 @@ class TrueSpatialLowRankGaussian():
             u = torch.randn(B, C, device=device)
             u = u / u.norm(dim=1, keepdim=True)
 
-            r = torch.sqrt(T_p) + delta
+            r = torch.sqrt(T_p) + delta * torch.rand(B, 1, device=device)
             w = u * r
 
             # Low-rank component
