@@ -7,4 +7,5 @@ low_rank_gaussian/*
 spatial_low_rank_gaussian/*
 true_spatial_low_rank_gaussian/*
 true_spatial_low_rank_gaussian_n1/*
+true_spatial_low_rank_gaussian_n3_k64/*
 .idea
