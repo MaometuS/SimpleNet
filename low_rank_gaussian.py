@@ -155,7 +155,8 @@ class TrueSpatialLowRankGaussian():
         return low_rank + iso
 
     @torch.no_grad()
-    def generate_anomaly_at_patch(self, p, B, delta=1, mode="default", anchor=None):
+    def generate_anomaly_at_patch(self, p, B, delta=1, mode="default", anchor=None,
+                                   radius=None):
         """
         Generate B anomalies for patch p.
 
@@ -166,13 +167,18 @@ class TrueSpatialLowRankGaussian():
 
         mode="subspace":
             Sample direction in U_p subspace only (k-dim sphere). Anomaly sits on a
-            Mahalanobis ellipse inside the data-variation subspace, structurally
-            matching real defects. anchor is ignored.
+            Mahalanobis ellipse inside the data-variation subspace. anchor ignored.
 
         mode="anchored":
             Add an in-U_p shift to a REAL normal feature passed via anchor.
-            anchor must be shape (B, C). Combines (1)'s direction geometry with
-            anchoring to the actual data manifold (not a Gaussian draw).
+            anchor must be shape (B, C).
+
+        radius:
+            Explicit Mahalanobis radius. Overrides the T_p-based default.
+            - If None (default): r = sqrt(T_p) + delta * U(0,1). Statistical-
+              threshold semantics from the PDF.
+            - If float > 0: r = radius * U(0,1). Decoupled from T_p — use this
+              to match a SimpleNet-style small noise magnitude in the U_p subspace.
 
         Returns: (B, C)
         """
@@ -183,23 +189,25 @@ class TrueSpatialLowRankGaussian():
         T_p = self.T[p].to(device)
         k = U_p.shape[1]
 
+        if radius is None:
+            r = torch.sqrt(T_p) + delta * torch.rand(B, 1, device=device)
+        else:
+            r = float(radius) * torch.rand(B, 1, device=device)
+
         if mode == "default":
             u = torch.randn(B, C, device=device)
             u = u / u.norm(dim=1, keepdim=True)
-            r = torch.sqrt(T_p) + delta * torch.rand(B, 1, device=device)
             w = u * r
             return self.mu[p].to(device) + self._sigma_half_w(p, w, device)
 
         if mode in ("subspace", "anchored"):
             v_k = torch.randn(B, k, device=device)
-            v_k = v_k / v_k.norm(dim=1, keepdim=True)        # unit in k-dim
-            r = torch.sqrt(T_p) + delta * torch.rand(B, 1, device=device)
-            shift = (r * v_k * torch.sqrt(Lambda_p)) @ U_p.T  # in U_p subspace
+            v_k = v_k / v_k.norm(dim=1, keepdim=True)
+            shift = (r * v_k * torch.sqrt(Lambda_p)) @ U_p.T
 
             if mode == "subspace":
                 return self.mu[p].to(device) + shift
 
-            # mode == "anchored"
             if anchor is None:
                 raise ValueError(
                     "mode='anchored' requires `anchor` of shape (B, C) — "
@@ -231,11 +239,11 @@ class TrueSpatialLowRankGaussian():
     # BULK SAMPLING (all patches)
     # --------------------------------------------------
     @torch.no_grad()
-    def generate_anomalies(self, B, delta=1, mode="default", anchors=None):
+    def generate_anomalies(self, B, delta=1, mode="default", anchors=None, radius=None):
         """
         Generate anomalies for every patch. Returns (B, P, C).
-        See generate_anomaly_at_patch for `mode`. `anchors` (B, P, C) is required
-        when mode='anchored' and ignored otherwise.
+        See generate_anomaly_at_patch for `mode` and `radius`. `anchors` (B, P, C)
+        is required when mode='anchored' and ignored otherwise.
         """
         P = self.mu.shape[0]
         if mode == "anchored":
@@ -250,6 +258,7 @@ class TrueSpatialLowRankGaussian():
                 self.generate_anomaly_at_patch(
                     p, B, delta, mode=mode,
                     anchor=anchors[:, p, :] if anchors is not None else None,
+                    radius=radius,
                 )
                 for p in range(P)
             ],

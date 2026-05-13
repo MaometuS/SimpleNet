@@ -212,6 +212,10 @@ class SimpleNet(torch.nn.Module):
         # "default": PDF formulation (full-sphere). "subspace": in-U_k only.
         # "anchored": real-normal anchor + in-U_k shift. Override via env var.
         self.tslrg_anomaly_mode = os.environ.get("TSLRG_ANOMALY_MODE", "default")
+        # Optional explicit Mahalanobis radius. If set, overrides the T_p-based
+        # default. Use a small value (e.g., 0.5–2) to mimic SimpleNet's noise scale.
+        _r = os.environ.get("TSLRG_RADIUS")
+        self.tslrg_radius = float(_r) if _r else None
 
         self.variance_mlp = VarianceMLP().to(self.device)
         self.variance_mlp.load_state_dict(torch.load("variance_mlp_25.pth"))
@@ -636,11 +640,13 @@ class SimpleNet(torch.nn.Module):
                     if self.tslrg_anomaly_mode == "anchored":
                         anchors = true_feats.detach().reshape(B, P, C)
                         fake_feats = self.tslrg.generate_anomalies(
-                            B, mode="anchored", anchors=anchors
+                            B, mode="anchored", anchors=anchors,
+                            radius=self.tslrg_radius,
                         ).reshape(true_feats.shape)
                     else:
                         fake_feats = self.tslrg.generate_anomalies(
-                            B, mode=self.tslrg_anomaly_mode
+                            B, mode=self.tslrg_anomaly_mode,
+                            radius=self.tslrg_radius,
                         ).reshape(true_feats.shape)
                     fake_feats.to(self.device)
                     true_feats.to(self.device)
