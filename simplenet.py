@@ -216,6 +216,14 @@ class SimpleNet(torch.nn.Module):
         # default. Use a small value (e.g., 0.5–2) to mimic SimpleNet's noise scale.
         _r = os.environ.get("TSLRG_RADIUS")
         self.tslrg_radius = float(_r) if _r else None
+        self.tslrg_radius_mode = os.environ.get("TSLRG_RADIUS_MODE", "threshold")
+        self.tslrg_patch_mask_mode = os.environ.get("TSLRG_PATCH_MASK_MODE", "all")
+        self.tslrg_patch_mask_ratio = float(os.environ.get("TSLRG_PATCH_MASK_RATIO", "0.15"))
+        self.tslrg_patch_mask_block = int(os.environ.get("TSLRG_PATCH_MASK_BLOCK", "5"))
+        self.tslrg_refine_steps = int(os.environ.get("TSLRG_REFINE_STEPS", "0"))
+        self.tslrg_refine_step_size = float(os.environ.get("TSLRG_REFINE_STEP_SIZE", "0.1"))
+        _refine_radius = os.environ.get("TSLRG_REFINE_MAX_RADIUS")
+        self.tslrg_refine_max_radius = float(_refine_radius) if _refine_radius else None
 
         self.variance_mlp = VarianceMLP().to(self.device)
         self.variance_mlp.load_state_dict(torch.load("variance_mlp_25.pth"))
@@ -545,6 +553,100 @@ class SimpleNet(torch.nn.Module):
 
         return x_fake
 
+    def _sample_patch_mask(self, B, P, device):
+        mode = self.tslrg_patch_mask_mode
+        if mode == "all":
+            return torch.ones(B, P, dtype=torch.bool, device=device)
+
+        if self.tslrg.spatial_shape is None:
+            H = int(round(P ** 0.5))
+            W = H
+        else:
+            H, W = self.tslrg.spatial_shape
+        if H * W != P:
+            raise ValueError(f"Cannot build patch mask for P={P}, shape={(H, W)}")
+
+        ratio = min(max(self.tslrg_patch_mask_ratio, 0.0), 1.0)
+        target = max(1, int(round(P * ratio)))
+
+        if mode == "random":
+            mask = torch.zeros(B, P, dtype=torch.bool, device=device)
+            for b in range(B):
+                idx = torch.randperm(P, device=device)[:target]
+                mask[b, idx] = True
+            return mask
+
+        if mode == "block":
+            mask = torch.zeros(B, H, W, dtype=torch.bool, device=device)
+            block = max(1, self.tslrg_patch_mask_block)
+            half = block // 2
+            for b in range(B):
+                selected = 0
+                while selected < target:
+                    cy = torch.randint(0, H, (1,), device=device).item()
+                    cx = torch.randint(0, W, (1,), device=device).item()
+                    y0, y1 = max(0, cy - half), min(H, cy + half + 1)
+                    x0, x1 = max(0, cx - half), min(W, cx + half + 1)
+                    mask[b, y0:y1, x0:x1] = True
+                    selected = int(mask[b].sum().item())
+            return mask.reshape(B, P)
+
+        raise ValueError("unknown TSLRG_PATCH_MASK_MODE={!r}; expected one of "
+                         "'all', 'random', 'block'".format(mode))
+
+    def _project_delta_to_tslrg_subspace(self, delta):
+        U = self.tslrg.U.to(delta.device)
+        coeff = torch.einsum("bpc,pck->bpk", delta, U)
+        return torch.einsum("bpk,pck->bpc", coeff, U), coeff
+
+    def _mahal_radius_from_delta(self, delta):
+        U = self.tslrg.U.to(delta.device)
+        Lambda = self.tslrg.Lambda.to(delta.device).clamp_min(1e-12)
+        coeff = torch.einsum("bpc,pck->bpk", delta, U)
+        return torch.sqrt((coeff ** 2 / Lambda.unsqueeze(0)).sum(dim=-1).clamp_min(1e-12))
+
+    def _clamp_tslrg_subspace_delta(self, base, candidate, max_radius):
+        delta = candidate - base
+        U = self.tslrg.U.to(delta.device)
+        Lambda = self.tslrg.Lambda.to(delta.device).clamp_min(1e-12)
+        coeff = torch.einsum("bpc,pck->bpk", delta, U)
+        white = coeff / torch.sqrt(Lambda).unsqueeze(0)
+        norm = torch.norm(white, dim=-1, keepdim=True).clamp_min(1e-12)
+        scale = torch.minimum(torch.ones_like(norm), max_radius.unsqueeze(-1) / norm)
+        clamped = white * scale
+        projected = torch.einsum(
+            "bpk,pck->bpc",
+            clamped * torch.sqrt(Lambda).unsqueeze(0),
+            U,
+        )
+        return base + projected
+
+    def _refine_fake_features(self, true_feats, fake_feats, patch_mask):
+        if self.tslrg_refine_steps <= 0:
+            return fake_feats.detach()
+
+        B, P, C = fake_feats.shape
+        base = true_feats.detach()
+        x = fake_feats.detach()
+        initial_radius = self._mahal_radius_from_delta(x - base).detach()
+        if self.tslrg_refine_max_radius is not None:
+            max_radius = torch.full_like(initial_radius, self.tslrg_refine_max_radius)
+        else:
+            max_radius = initial_radius.clamp_min(1e-6)
+
+        for _ in range(self.tslrg_refine_steps):
+            x = x.detach().requires_grad_(True)
+            flat_scores = self.discriminator(x.reshape(B * P, C)).reshape(B, P)
+            objective = flat_scores[patch_mask].mean()
+            grad = torch.autograd.grad(objective, x, only_inputs=True)[0]
+            grad, _ = self._project_delta_to_tslrg_subspace(grad)
+            grad_norm = torch.norm(grad, dim=-1, keepdim=True).clamp_min(1e-12)
+            candidate = x - self.tslrg_refine_step_size * grad / grad_norm
+            x = self._clamp_tslrg_subspace_delta(base, candidate, max_radius)
+            x = torch.where(patch_mask.unsqueeze(-1), x, base)
+
+        return x.detach()
+
     def _train_discriminator(self, input_data, current_meta_epoch=1):
         """Computes and sets the support features for SPADE."""
         _ = self.forward_modules.eval()
@@ -637,32 +739,51 @@ class SimpleNet(torch.nn.Module):
                     P = self.tslrg.mu.shape[0]
                     C = true_feats.shape[1]
                     B = true_feats.shape[0] // P
-                    if self.tslrg_anomaly_mode == "anchored":
+                    patch_mask = self._sample_patch_mask(B, P, true_feats.device)
+                    true_feats_bpc = true_feats.detach().reshape(B, P, C)
+                    if self.tslrg_anomaly_mode in ("simplenet_noise", "noise"):
+                        fake_feats = true_feats_bpc + torch.randn_like(true_feats_bpc) * self.noise_std
+                    elif self.tslrg_anomaly_mode == "anchored":
                         anchors = true_feats.detach().reshape(B, P, C)
                         fake_feats = self.tslrg.generate_anomalies(
                             B, mode="anchored", anchors=anchors,
                             radius=self.tslrg_radius,
-                        ).reshape(true_feats.shape)
+                            radius_mode=self.tslrg_radius_mode,
+                            device=self.device,
+                        )
                     else:
                         fake_feats = self.tslrg.generate_anomalies(
                             B, mode=self.tslrg_anomaly_mode,
                             radius=self.tslrg_radius,
-                        ).reshape(true_feats.shape)
-                    fake_feats.to(self.device)
-                    true_feats.to(self.device)
+                            radius_mode=self.tslrg_radius_mode,
+                            device=self.device,
+                        )
+                    fake_feats = torch.where(
+                        patch_mask.unsqueeze(-1),
+                        fake_feats.to(self.device),
+                        true_feats_bpc,
+                    )
+                    fake_feats = self._refine_fake_features(
+                        true_feats_bpc, fake_feats, patch_mask
+                    )
+                    fake_feats = fake_feats.reshape(true_feats.shape)
 
                     scores = self.discriminator(torch.cat([true_feats, fake_feats]))
                     true_scores = scores[:len(true_feats)]
-                    fake_scores = scores[len(fake_feats):]
+                    fake_scores = scores[len(true_feats):].reshape(B, P)
+                    selected_fake_scores = fake_scores[patch_mask]
 
                     th = self.dsc_margin
                     p_true = (true_scores.detach() >= th).sum() / len(true_scores)
-                    p_fake = (fake_scores.detach() < -th).sum() / len(fake_scores)
+                    p_fake = (selected_fake_scores.detach() < -th).sum() / len(selected_fake_scores)
                     true_loss = torch.clip(-true_scores + th, min=0)
-                    fake_loss = torch.clip(fake_scores + th, min=0)
+                    fake_loss = torch.clip(selected_fake_scores + th, min=0)
 
                     self.logger.logger.add_scalar(f"p_true", p_true, self.logger.g_iter)
                     self.logger.logger.add_scalar(f"p_fake", p_fake, self.logger.g_iter)
+                    self.logger.logger.add_scalar(
+                        "fake_patch_ratio", patch_mask.float().mean(), self.logger.g_iter
+                    )
 
                     loss = true_loss.mean() + fake_loss.mean()
                     # loss += lambda_anchor*anchor_loss

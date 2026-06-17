@@ -139,6 +139,61 @@ class TrueSpatialLowRankGaussian():
     # --------------------------------------------------
     # PER-PATCH SAMPLING
     # --------------------------------------------------
+    def _device_for_sampling(self, device=None, anchor=None):
+        if device is not None:
+            return torch.device(device)
+        if anchor is not None:
+            return anchor.device
+        return self.mu.device
+
+    @torch.no_grad()
+    def mahal2_at_patch(self, p, x, device=None):
+        """Mahalanobis^2 under the fitted patch covariance. x: (B, C)."""
+        device = self._device_for_sampling(device, x)
+        mu_p = self.mu[p].to(device)
+        U_p = self.U[p].to(device)
+        Lambda_p = self.Lambda[p].to(device)
+        eps_p = self.eps[p].to(device)
+
+        d = x.to(device) - mu_p
+        proj = d @ U_p
+        term1 = (proj ** 2 / Lambda_p).sum(dim=1)
+        residual = d - proj @ U_p.T
+        term2 = (residual ** 2).sum(dim=1) / eps_p
+        return term1 + term2
+
+    @torch.no_grad()
+    def _sample_radius(self, p, B, delta, radius, radius_mode, anchor, device):
+        """Return a (B, 1) Mahalanobis radius for anomaly synthesis."""
+        T_p = self.T[p].to(device)
+        C = self.mu.shape[1]
+        mode = radius_mode
+
+        if mode == "threshold":
+            if radius is None:
+                return torch.sqrt(T_p) + delta * torch.rand(B, 1, device=device)
+            return float(radius) * torch.rand(B, 1, device=device)
+
+        scale = 1.0 if radius is None else float(radius)
+
+        if mode == "patch":
+            # Normalizes patch thresholds by the ambient chi-square scale so a
+            # radius sweep means roughly the same thing across fitted patches.
+            base = torch.sqrt(T_p / C).clamp_min(1e-6)
+            return scale * base * torch.rand(B, 1, device=device)
+
+        if mode == "anchor":
+            if anchor is None:
+                raise ValueError("radius_mode='anchor' requires real anchors")
+            anchor_score = self.mahal2_at_patch(p, anchor, device=device)
+            gap = torch.sqrt(T_p).unsqueeze(0) - torch.sqrt(anchor_score).unsqueeze(1)
+            fallback = 0.05 * torch.sqrt(T_p)
+            base = torch.maximum(gap, fallback.expand_as(gap))
+            return scale * base * torch.rand(B, 1, device=device)
+
+        raise ValueError("unknown radius_mode {!r}; expected one of "
+                         "'threshold', 'patch', 'anchor'".format(radius_mode))
+
     @torch.no_grad()
     def _sigma_half_w(self, p, w, device):
         """Apply Sigma_p^(1/2) to w. w: (B, C). Returns (B, C)."""
@@ -156,7 +211,8 @@ class TrueSpatialLowRankGaussian():
 
     @torch.no_grad()
     def generate_anomaly_at_patch(self, p, B, delta=1, mode="default", anchor=None,
-                                   radius=None):
+                                   radius=None, radius_mode="threshold",
+                                   device=None):
         """
         Generate B anomalies for patch p.
 
@@ -180,19 +236,21 @@ class TrueSpatialLowRankGaussian():
             - If float > 0: r = radius * U(0,1). Decoupled from T_p — use this
               to match a SimpleNet-style small noise magnitude in the U_p subspace.
 
+        radius_mode:
+            "threshold": existing behavior.
+            "patch": radius * sqrt(T_p / C) * U(0,1), for patch-calibrated sweeps.
+            "anchor": radius * gap(anchor, T_p) * U(0,1), for per-anchor near-
+            boundary perturbations.
+
         Returns: (B, C)
         """
-        device = 'cuda:0'
+        device = self._device_for_sampling(device, anchor)
         C = self.mu.shape[1]
         U_p = self.U[p].to(device)         # (C, k)
         Lambda_p = self.Lambda[p].to(device)  # (k,)
-        T_p = self.T[p].to(device)
         k = U_p.shape[1]
 
-        if radius is None:
-            r = torch.sqrt(T_p) + delta * torch.rand(B, 1, device=device)
-        else:
-            r = float(radius) * torch.rand(B, 1, device=device)
+        r = self._sample_radius(p, B, delta, radius, radius_mode, anchor, device)
 
         if mode == "default":
             u = torch.randn(B, C, device=device)
@@ -223,12 +281,12 @@ class TrueSpatialLowRankGaussian():
                          "'default', 'subspace', 'anchored'")
 
     @torch.no_grad()
-    def generate_normal_at_patch(self, p, B):
+    def generate_normal_at_patch(self, p, B, device=None):
         """
         Draw B samples from N(mu_p, Sigma_p).
         Returns: (B, C)
         """
-        device = 'cuda:0'
+        device = self._device_for_sampling(device)
         C = self.mu.shape[1]
 
         w = torch.randn(B, C, device=device)
@@ -239,12 +297,14 @@ class TrueSpatialLowRankGaussian():
     # BULK SAMPLING (all patches)
     # --------------------------------------------------
     @torch.no_grad()
-    def generate_anomalies(self, B, delta=1, mode="default", anchors=None, radius=None):
+    def generate_anomalies(self, B, delta=1, mode="default", anchors=None,
+                           radius=None, radius_mode="threshold", device=None):
         """
         Generate anomalies for every patch. Returns (B, P, C).
-        See generate_anomaly_at_patch for `mode` and `radius`. `anchors` (B, P, C)
-        is required when mode='anchored' and ignored otherwise.
+        See generate_anomaly_at_patch for `mode`, `radius`, and `radius_mode`.
+        `anchors` (B, P, C) is required when mode='anchored' and ignored otherwise.
         """
+        device = self._device_for_sampling(device, anchors)
         P = self.mu.shape[0]
         if mode == "anchored":
             if anchors is None:
@@ -259,6 +319,8 @@ class TrueSpatialLowRankGaussian():
                     p, B, delta, mode=mode,
                     anchor=anchors[:, p, :] if anchors is not None else None,
                     radius=radius,
+                    radius_mode=radius_mode,
+                    device=device,
                 )
                 for p in range(P)
             ],
@@ -266,11 +328,12 @@ class TrueSpatialLowRankGaussian():
         )
 
     @torch.no_grad()
-    def generate_normal_features(self, B):
+    def generate_normal_features(self, B, device=None):
         """Draw B samples per patch from N(mu_p, Sigma_p). Returns (B, P, C)."""
+        device = self._device_for_sampling(device)
         P = self.mu.shape[0]
         return torch.stack(
-            [self.generate_normal_at_patch(p, B) for p in range(P)], dim=1
+            [self.generate_normal_at_patch(p, B, device=device) for p in range(P)], dim=1
         )
 
     def state_dict(self):
@@ -691,4 +754,3 @@ def run(
 
 if __name__ == "__main__":
     main()
-

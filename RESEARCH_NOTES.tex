@@ -1,0 +1,654 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath, amssymb}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\hypersetup{colorlinks=true, linkcolor=blue, urlcolor=blue}
+
+\newcommand{\code}[1]{\texttt{#1}}
+\newcommand{\Uk}{\mathbf{U}_k}
+\newcommand{\Up}{\mathbf{U}_p}
+\newcommand{\bmu}{\boldsymbol{\mu}}
+\newcommand{\bSigma}{\boldsymbol{\Sigma}}
+\newcommand{\bLambda}{\boldsymbol{\Lambda}}
+
+\title{Gaussian Anomaly Synthesis --- Research Log}
+\author{SimpleNet anomaly-detection project}
+\date{}
+
+\begin{document}
+\maketitle
+
+\noindent
+A chronological account of investigating, validating, and adapting the
+\emph{``Gaussian Modeling of Normal Data and Synthetic Anomaly Generation''}
+method (\code{Gaussian\_anomaly.pdf}) as implemented by
+\code{TrueSpatialLowRankGaussian}, and its use as a synthetic-negative generator
+for the SimpleNet anomaly detector.
+
+\medskip
+\noindent
+The story has three acts:
+\begin{enumerate}[noitemsep]
+  \item \textbf{Spec compliance} --- does the code match the paper?
+  \item \textbf{Model validity} --- does the fitted model actually describe the data?
+  \item \textbf{Task utility} --- does the method help the downstream detector?
+\end{enumerate}
+Each act follows the same pattern: an assumption, a diagnostic that broke it, and
+a change that addressed it.
+
+\tableofcontents
+
+%======================================================================
+\section{Background}
+%======================================================================
+
+\paragraph{The method (from the PDF).}
+For normal samples $\mathbf{x} \in \mathbb{R}^{512}$ with $N \approx 200 < d$, fit
+a Gaussian $\mathcal{N}(\bmu, \bSigma)$ with a low-rank-plus-isotropic covariance:
+\begin{equation}
+  \bSigma = \sum_{j=1}^{k} \lambda_j \mathbf{v}_j \mathbf{v}_j^\top + \varepsilon \mathbf{I}.
+  \label{eq:sigma}
+\end{equation}
+Synthesize anomalies on a Mahalanobis shell: sample a unit direction $\mathbf{u}$,
+a radius $r \in [\sqrt{T},\, \sqrt{T} + \Delta]$ where $T$ is the upper-$q\%$
+Mahalanobis percentile of normal data, and map back
+\begin{equation}
+  \mathbf{x}_{\text{anom}} = \bmu + \bSigma^{1/2}(r\,\mathbf{u}),
+  \qquad
+  \bSigma^{1/2}\mathbf{w} = \Uk \sqrt{\bLambda_k}\, \Uk^\top \mathbf{w}
+    + \sqrt{\varepsilon}\,\bigl(\mathbf{w} - \Uk \Uk^\top \mathbf{w}\bigr).
+  \label{eq:sigmahalf}
+\end{equation}
+
+\paragraph{The implementation.}
+\code{TrueSpatialLowRankGaussian} in \code{low\_rank\_gaussian.py} extends this
+\emph{per spatial patch}: for patch features $X \in \mathbb{R}^{N \times P \times C}$
+with $P = 1296$ patches and $C = 1536$ channels (WideResNet50 layer2+layer3), it
+fits an independent $(\bmu_p, \bSigma_p, T_p)$ for every patch. Anomalies feed the
+SimpleNet discriminator as negative samples during \code{gan} training.
+
+\paragraph{The regime that drives everything below.}
+$N \approx 200$--$280$ training images, $C = 1536$ feature channels. The sample
+covariance is badly rank-deficient. Every problem in this log traces back to that
+ratio.
+
+%======================================================================
+\section{Act 1 --- Spec Compliance}
+%======================================================================
+
+\textbf{Assumption:} the implementation faithfully follows the PDF.
+
+\medskip
+\noindent
+\textbf{Diagnostic:} line-by-line comparison of \code{fit} / \code{generate\_*}
+against the paper's equations (0-1) through (1-4).
+
+\medskip
+\noindent
+\textbf{Findings --- four deviations:}
+
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+PDF & Original code & Verdict \\
+\midrule
+$\varepsilon = 0.5 \times \mathrm{median}(\lambda_{k+1:r})$
+  & $\varepsilon = \mathrm{mean}(\lambda_{k+1:r})$ & deviation \\
+$\varepsilon$ fallback $10^{-3}$--$10^{-2}$
+  & $\varepsilon = 10^{-6}$ & deviation \\
+radius $r \in [\sqrt{T},\sqrt{T}+\Delta]$ (a range)
+  & $r = \sqrt{T} + \Delta$ (fixed) & deviation \\
+example $q = 99.5$
+  & default $\code{quantile} = 0.99$ & minor (parameterized) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\medskip
+\noindent
+The matching parts were all correct: mean, centering, SVD eigenvalues
+$\lambda_j = s_j^2/(N-1)$, the low-rank Mahalanobis score
+\begin{equation}
+  s(\mathbf{x}) = \sum_j \frac{\mathrm{proj}_j^2}{\lambda_j}
+    + \frac{\lVert \mathbf{resid} \rVert^2}{\varepsilon},
+  \label{eq:mahal}
+\end{equation}
+and the $\bSigma^{1/2}$ application formula~\eqref{eq:sigmahalf}.
+
+\paragraph{Changes applied.}
+\begin{itemize}[noitemsep]
+  \item $\varepsilon$ formula $\to 0.5 \times \mathrm{median}(\text{trailing})$
+    with $10^{-2}$ fallback (PDF-conformant).
+  \item Anomaly radius $\to r = \sqrt{T_p} + \delta \cdot U(0,1)$, sampling the
+    shell instead of a fixed sphere.
+\end{itemize}
+
+\paragraph{Reasoning.}
+Establish a known-correct baseline before touching anything. A faithful
+implementation is the only thing you can meaningfully debug.
+
+\paragraph{Note on the scope extension.}
+The PDF describes one global Gaussian; the code fits one per patch. We judged this
+defensible --- it mirrors PaDiM and exploits MVTec's spatial alignment --- but
+flagged two concerns that became central later: (a)~per-patch fitting sees only
+$N \approx 250$ samples, which is statistically thin, and (b)~anomalies are
+sampled independently per patch, so a synthesized ``anomaly image'' is $P$
+uncorrelated anomalies stacked, not a coherent joint draw.
+
+%======================================================================
+\section{Act 2 --- Model Validity}
+%======================================================================
+
+\textbf{Assumption:} with the spec bugs fixed, the fitted
+$\mathcal{N}(\bmu_p, \bSigma_p)$ describes the normal feature distribution well
+enough to generate meaningful anomalies.
+
+\medskip
+\noindent
+This act is the longest because the assumption was wrong, and each diagnostic
+revealed a deeper layer.
+
+\subsection{Refactor for inspection}
+
+Before diagnosing, we made the model inspectable:
+\begin{itemize}[noitemsep]
+  \item Added \code{generate\_normal\_at\_patch} / \code{generate\_normal\_features}
+    --- draw from $\mathcal{N}(\bmu_p, \bSigma_p)$ directly, to compare model
+    samples against real features.
+  \item Added \code{generate\_anomaly\_at\_patch} (per-patch) and refactored the
+    bulk \code{generate\_anomalies} to call it; factored the shared
+    $\bSigma^{1/2}$ application into \code{\_sigma\_half\_w}.
+  \item Rewrote \code{tsne\_gaussian\_vs\_normal.py} to use these methods
+    (deleting duplicated local re-implementations of the sampling math).
+\end{itemize}
+
+\paragraph{Reasoning.}
+One code path for the math means the visualization cannot silently disagree with
+training.
+
+\subsection{First diagnostic --- t-SNE, and why it lied}
+
+A t-SNE of \{real normals, Gaussian draws, boundary anomalies\} showed all three
+classes fully intermixed. First instinct: the generator is broken. It wasn't ---
+t-SNE was the wrong tool:
+\begin{itemize}[noitemsep]
+  \item A Mahalanobis \emph{shell} in $1536$-D projects to a filled \emph{disk} in
+    2-D, not a ring (random high-D directions hit every 2-D axis roughly
+    uniformly).
+  \item t-SNE preserves \emph{Euclidean} structure; the anomaly construction is
+    \emph{Mahalanobis}.
+\end{itemize}
+
+\paragraph{Change.}
+Added a Mahalanobis$^2$ histogram panel (\code{mahal2} helper) alongside the
+t-SNE, plus per-group mean/median/min/max printouts.
+
+\paragraph{Reasoning.}
+Measure in the metric the method is actually defined in.
+
+\subsection{The histogram exposed the real problem}
+
+With \code{neighborhood = 1} (per-patch fit) the histogram showed:
+\begin{itemize}[noitemsep]
+  \item real normals: Mahalanobis$^2$ peaked low, hard-clipped at $T_p$ (by
+    definition);
+  \item boundary anomalies: a tight spike at $T_p$ (correct);
+  \item \textbf{Gaussian draws: a cluster at $C \approx 1536$} --- \emph{more
+    extreme than the anomalies.}
+\end{itemize}
+The fitted Gaussian's own typical sample scores $\sim 2\times$ the threshold meant
+for ``normal.'' Cause: $\bSigma = \Up \bLambda_p \Up^\top + \varepsilon \mathbf{I}$
+adds isotropic $\varepsilon$ variance across the ${\sim}1472$ channel directions
+unsupported by data. Real features have ${\sim}0$ variance there; model draws
+don't. The sampler is correct --- \textbf{the model over-spreads.}
+
+This reframed the whole problem: \emph{the issue is the covariance estimate, not
+the sampling or the anomaly construction.}
+
+\subsection{Tied covariance within neighborhoods}
+
+To attack the $N \ll C$ root cause we considered four options (reduce ambient
+dim; pool patches; principled $\varepsilon$; drop the generative model). We
+implemented \textbf{pooling across spatial neighbors}:
+\begin{itemize}[noitemsep]
+  \item New \code{neighborhood} parameter. $\bSigma_p$ is estimated by pooling
+    centered features from a $w \times w$ window around patch $p$. Means and
+    thresholds stay per-patch.
+  \item Sample count per fit grows from $N$ to ${\sim}N w^2$ (e.g.\ $250 \to 2250$
+    for $w = 3$), taking the covariance from rank ${\sim}249$ to near full rank.
+  \item Threaded through as a \code{--neighborhood} CLI flag and
+    \code{NEIGHBORHOOD} env var.
+\end{itemize}
+
+\paragraph{Reasoning.}
+Spatial neighbors on aligned objects are near-i.i.d.; borrowing their samples is
+the cheapest way to escape the rank-deficient regime without changing the feature
+space.
+
+\subsection{The edge-patch bug}
+
+First run with \code{neighborhood=3} crashed:
+\code{stack expects each tensor to be equal size, got [1536, 240] and [1536, 256]}.
+Corner/edge patches had smaller windows $\to$ fewer pooled samples $\to$ smaller
+SVD rank $\to$ smaller $k_{\text{eff}}$.
+
+\paragraph{Change.}
+Reflection-pad the patch grid before windowing, so every patch --- corner, edge,
+interior --- sees a full $w \times w$ window and a uniform $k_{\text{eff}}$.
+
+\paragraph{Reasoning.}
+Uniform $k$ across patches is required to store $\mathbf{U}$ as a single tensor;
+reflection padding also gives edge patches the same sample count (less noisy
+covariance) as interior ones, which is a correctness win, not just a shape fix.
+
+\subsection{Choosing k}
+
+With pooling, the PDF's $k \le N-1$ cap (which pinned $k = 64$) no longer binds
+--- $w = 3$ gives effective rank ${\sim}1535$. We recommended $k = 256$: large
+enough to span the real signal dimensionality of WideResNet features, still
+$\ll 2250$ so the covariance stays well-determined.
+
+\subsection{The histogram got \emph{worse}, and why}
+
+With \code{neighborhood=3, k=256} the histogram was still bad --- now real-data
+Mahalanobis$^2$ shot up to $10^4$--$10^5$ while Gaussian draws stayed at $C$.
+Increasing $k$ did not help.
+
+Diagnosis: \textbf{the culprit was $\varepsilon$, not $k$.} With pooling, the SVD
+now returns $1536$ eigenvalues instead of $250$. The trailing spectrum is long and
+heavily skewed (many tiny values). $0.5 \times \mathrm{median}(\text{trailing})$
+--- fine in the PDF's original $N < d$ regime where there were few, noise-floor
+trailing eigenvalues --- is now biased far too small. With a tiny $\varepsilon$, a
+real sample's genuine residual energy $\lVert\mathbf{resid}\rVert^2 / \varepsilon$
+blows up, while a model draw's residual is $\sqrt{\varepsilon}$-scaled \emph{by
+construction} so the $\varepsilon$'s cancel. Hence the cross-asymmetry.
+
+\subsection{The fix that worked --- PPCA $\varepsilon$}
+\label{sec:ppca}
+
+\paragraph{Change.}
+New \code{eps\_method} parameter, default \code{"ppca"}:
+\begin{equation}
+  \varepsilon_{\text{PPCA}} = \frac{1}{r-k}\sum_{j=k+1}^{r} \lambda_j
+  = \mathrm{mean}(\lambda_{k+1:r}),
+  \label{eq:ppca}
+\end{equation}
+the Tipping \& Bishop probabilistic-PCA MLE for the isotropic noise variance ---
+with the PDF's $0.5 \times \mathrm{median}$ kept as the \code{"median"} option.
+The rest of this subsection is the argument for why this one-line change is the
+\emph{correct} fix, not merely a working one.
+
+\paragraph{The blow-up, precisely.}
+Write the Mahalanobis$^2$ score~\eqref{eq:mahal} as a subspace term plus a
+residual term. For a real feature whose variance along the trailing directions is
+genuine (not noise), the expectation factorises:
+\begin{equation}
+  \mathbb{E}\bigl[s(\mathbf{x}_{\text{real}})\bigr]
+    = \underbrace{k}_{\text{subspace term}}
+    + \underbrace{(C-k)\cdot
+        \frac{\mathrm{mean}(\lambda_{k+1:r})}{\varepsilon}}_{\text{residual term}}.
+  \label{eq:blowup}
+\end{equation}
+The subspace term contributes $k$ because each modelled direction contributes
+$\mathbb{E}[\mathrm{proj}_j^2/\lambda_j] = 1$. The residual term is the total
+trailing variance $(C-k)\cdot\mathrm{mean}(\lambda_{k+1:r})$ divided by whatever
+$\varepsilon$ we chose. Substituting the PDF heuristic
+$\varepsilon = 0.5 \times \mathrm{median}(\lambda_{k+1:r})$:
+\begin{equation}
+  \mathbb{E}\bigl[s(\mathbf{x}_{\text{real}})\bigr]
+    = k + 2\,(C-k)\cdot
+      \frac{\mathrm{mean}(\lambda_{k+1:r})}{\mathrm{median}(\lambda_{k+1:r})}.
+  \label{eq:blowup-median}
+\end{equation}
+The entire mis-calibration is the factor
+$\mathrm{mean}/\mathrm{median}$ of the trailing eigenvalues.
+
+\paragraph{Why the median is the wrong estimator.}
+For any right-skewed distribution, $\mathrm{median} < \mathrm{mean}$, and for a
+heavily right-skewed one $\mathrm{median} \ll \mathrm{mean}$. The trailing
+eigenvalue spectrum of deep CNN features is exactly this: a handful of moderate
+values just past the cut at $k$, then a long tail of near-zero values. The median
+sits down in that tail and reports a noise-floor-sized number; the mean is pulled
+up by the moderate values. Their ratio is routinely $10$--$50\times$, which
+through~\eqref{eq:blowup-median} is precisely the $10^4$--$10^5$ inflation seen in
+the histogram. The median is not noisy here --- it is \emph{consistently,
+structurally} biased low, because it is the wrong summary statistic for a skewed
+quantity whose \emph{sum} is what enters the score.
+
+\paragraph{Why the mean is principled, not just bigger.}
+$\mathrm{mean}(\lambda_{k+1:r})$ is not chosen because ``it is larger than the
+median.'' It is the \emph{maximum-likelihood estimator} of the isotropic noise
+variance under the probabilistic PCA model (Tipping \& Bishop, 1999): for
+$\mathbf{x} = \mathbf{W}\mathbf{z} + \bmu + \boldsymbol{\eta}$ with
+$\boldsymbol{\eta} \sim \mathcal{N}(0,\sigma^2 \mathbf{I})$, the value of
+$\sigma^2$ that maximises the data likelihood is exactly the average of the
+discarded eigenvalues. The PDF's $0.5 \times \mathrm{median}$ carries a free,
+unexplained constant ($0.5$) and an arbitrary statistic (the median); PPCA has
+neither --- the estimator is forced by the model.
+
+\paragraph{Self-consistency.}
+Substituting $\varepsilon = \mathrm{mean}(\lambda_{k+1:r})$
+into~\eqref{eq:blowup} makes the residual ratio equal to $1$ \emph{by
+construction}:
+\begin{equation}
+  \mathbb{E}\bigl[s(\mathbf{x}_{\text{real}})\bigr]
+    = k + (C-k)\cdot
+      \frac{\mathrm{mean}(\lambda_{k+1:r})}{\mathrm{mean}(\lambda_{k+1:r})}
+    = k + (C-k) = C.
+\end{equation}
+Real data then lands at $C$ --- exactly where model draws sit (Sec.~\ref{sec:ppca}
+draws have $s \approx C$ tautologically). The two populations coincide, which is
+the visual signature of a covariance estimate that actually matches the data.
+
+\paragraph{Why this is not fixable by increasing $k$.}
+Raising $k$ \emph{does} move $T_p$ --- empirically, $k = 64 \to 256$ roughly
+halved it. The mechanism: the moderate eigenvalues just past the old cut
+(positions ${\sim}k\!+\!1$ to ${\sim}2k$) are the largest contributors to the
+$\mathrm{mean}/\mathrm{median}$ skew; promoting them into the explicit
+low-rank term moves them from the ``divide by tiny $\varepsilon$'' bucket to the
+``divide by their own $\lambda_j$'' bucket, shrinking the skew of what remains.
+But this is a \emph{slope}, not a \emph{fix}:
+\begin{itemize}[noitemsep]
+  \item It is partial and has diminishing returns. Each doubling of $k$ absorbs a
+    progressively flatter chunk of the tail; halving $T_p$ when a ${\sim}20\times$
+    reduction is needed means $k$ is the wrong lever.
+  \item Large $k$ has its own costs --- storage $\mathcal{O}(Ck)$ per patch, and
+    eventually ``trusting'' eigenvectors estimated from almost no effective
+    samples.
+\end{itemize}
+The PPCA mean, by contrast, sets $\mathrm{mean}(\text{trailing})/\varepsilon = 1$
+exactly, at \emph{any} $k$ --- it removes the dependence on the tail's shape
+entirely rather than chipping at it. $k$ controls \emph{how many} eigenvalues are
+modelled explicitly; $\varepsilon$ controls whether the \emph{summary of the rest}
+is correct. The trailing problem lived entirely in the second knob.
+
+\paragraph{Why the PDF's heuristic was reasonable --- there.}
+The $0.5 \times \mathrm{median}$ rule was written for the PDF's stated regime,
+$N < d$. There the SVD returns only ${\sim}N$ eigenvalues, and the trailing ones
+are a short stub sitting near the noise floor --- a nearly flat tail, for which
+$\mathrm{median} \approx \mathrm{mean}$ and the heuristic is harmless.
+Neighborhood pooling (Sec.~2.4) deliberately broke $N < d$: with ${\sim}9N$
+samples the SVD now returns the full ${\sim}C$ eigenvalues and exposes the true
+heavy-tailed spectrum. The heuristic's hidden assumption --- ``trailing
+eigenvalues are a flat noise floor'' --- no longer holds, so the heuristic fails.
+This is the recurring pattern of the whole project: a step that fixes one regime
+($N < d$ rank deficiency) invalidates an assumption baked into another part of the
+method.
+
+\paragraph{Result.}
+The Mahalanobis histogram became correct --- real normals and Gaussian draws
+overlap at $C \approx 1536$, $T_p$ dropped to $\approx 1660 \approx
+\chi^2_C(0.99)$, and boundary anomalies sit cleanly just past $T_p$. The model now
+describes the data.
+
+\subsection{t-SNE still mixed --- and that's expected}
+
+Even with a correct model, the t-SNE panel still showed everything mixed.
+Confirmed this is structural, not a bug. The expected squared Euclidean norms are
+\begin{align}
+  \mathbb{E}\bigl[\lVert \mathbf{x} - \bmu \rVert_2^2\bigr]_{\text{real normals}}
+    &\approx \mathrm{tr}(\bSigma), \\
+  \mathbb{E}\bigl[\lVert \mathbf{x} - \bmu \rVert_2^2\bigr]_{\text{gaussian draws}}
+    &\approx \mathrm{tr}(\bSigma), \\
+  \mathbb{E}\bigl[\lVert \mathbf{x} - \bmu \rVert_2^2\bigr]_{\text{boundary anom.}}
+    &= \frac{T_p \cdot \mathrm{tr}(\bSigma)}{C}.
+\end{align}
+With $T_p \approx 1660$, $C = 1536$ the boundary/normal ratio is
+$T_p / C \approx \mathbf{1.08}$ --- anomalies are only ${\sim}4\%$ farther in
+Euclidean norm. The Mahalanobis shell is a thin Euclidean ellipsoid \emph{inside}
+the normal cloud's envelope. t-SNE on raw features cannot show this; whitening
+before t-SNE could. We left t-SNE as a known-limited diagnostic and trusted the
+histogram.
+
+%======================================================================
+\section{Act 3 --- Task Utility}
+%======================================================================
+
+\textbf{Assumption:} a self-consistent Gaussian + PDF-style boundary anomalies
+are useful negatives for the SimpleNet discriminator.
+
+\medskip
+\noindent
+\textbf{Diagnostic:} train the discriminator, measure AUROC.
+
+\subsection{The crisis --- AUROC $< 0.5$}
+
+The PDF-style anomalies gave \textbf{AUROC below $0.5$} --- worse than chance, and
+worse than SimpleNet's trivial ``add random noise to real features'' baseline.
+
+This is not ``the method doesn't help'' (that would be $0.5$). Below $0.5$ means
+the discriminator \emph{systematically learned the wrong thing.}
+
+\paragraph{Diagnosis --- structural, not a bug.}
+\begin{itemize}[noitemsep]
+  \item A uniform unit vector in $1536$-D has ${\sim}83\%$ of its mass in the
+    orthogonal complement of $\Uk$ (where $\varepsilon$ lives). So
+    $\bSigma^{1/2}(r\,\mathbf{u})$ displaces the anomaly mostly along directions
+    where real data has no variance --- a tiny Euclidean shift in ``fictional''
+    directions.
+  \item Real MVTec defects are the opposite: structured shifts \emph{in} the
+    high-variance $\Uk$ subspace, with large Euclidean magnitude.
+  \item The discriminator learns ``small Euclidean magnitude + orthogonal-subspace
+    perturbation $=$ anomaly.'' Real defects look like the \emph{normal} class
+    under that rule. The score inverts.
+\end{itemize}
+We also ruled out ``increase $k$ to $1024$'' --- that changes \emph{which
+directions are scaled}, not \emph{where the anomaly distribution sits}. The
+problem is location, not rank.
+
+\subsection{The fixes --- direction and anchor}
+
+We added a \code{mode} parameter to \code{generate\_anomaly\_at\_patch}:
+\begin{description}[noitemsep]
+  \item[\code{"default"}] the original PDF formulation (full $C$-sphere).
+  \item[\code{"subspace"}] sample the direction in the $\Up$ subspace only
+    ($k$-sphere). Same Mahalanobis radius, but the Euclidean displacement is
+    concentrated where real data --- and real defects --- actually vary:
+    \begin{equation}
+      \mathbf{x}_{\text{anom}}
+        = \bmu_p + r\,\Up \sqrt{\bLambda_p}\, \mathbf{v}_k,
+        \qquad \mathbf{v}_k \sim \text{Uniform}(\mathbb{S}^{k-1}).
+    \end{equation}
+  \item[\code{"anchored"}] add an in-$\Up$ shift to a \textbf{real normal
+    feature} $\mathbf{x}_{\text{real}}$, not the mean:
+    \begin{equation}
+      \mathbf{x}_{\text{anom}}
+        = \mathbf{x}_{\text{real}} + r\,\Up \sqrt{\bLambda_p}\, \mathbf{v}_k.
+    \end{equation}
+    Combines the subspace direction geometry with anchoring to the true data
+    manifold.
+\end{description}
+Wired through everywhere: \code{generate\_anomalies} (bulk), the t-SNE script
+(\code{--anomaly\_mode}), and SimpleNet training (\code{TSLRG\_ANOMALY\_MODE} env
+var).
+
+\paragraph{Correction during implementation.}
+The first \code{"anchored"} draft anchored on a \emph{fresh Gaussian draw}. The
+clarification was that the anchor must be a \emph{real} training feature. Changed
+\code{anchored} to require an explicit \code{anchor} / \code{anchors} argument,
+and wired \code{true\_feats} from the training batch as the anchors in
+\code{simplenet.py}.
+
+\paragraph{Reasoning.}
+The fitted Gaussian is an approximation of the manifold; a real feature \emph{is}
+the manifold. Anchoring on real features removes one layer of model error from the
+negative samples.
+
+\subsection{Result --- AUROC 0.8}
+
+\code{anchored} mode took \textbf{image AUROC from $<0.5$ to $0.8$}. The
+structural diagnosis was correct: anomaly \emph{direction and anchor} were the
+problem, not the covariance math.
+
+\subsection{The remaining gap --- pixel localization}
+
+Remaining scores: image \textbf{0.8}, full-pixel \textbf{0.7}, anomaly-pixel
+\textbf{0.5}. The detector knows \emph{whether} and roughly \emph{where} an image
+is defective, but cannot localize \emph{which pixels} inside a defective image are
+the defect.
+
+\paragraph{Hypothesis --- magnitude mismatch.}
+Anchored anomalies are shifted by a Mahalanobis radius ${\sim}\sqrt{T_p}
+\approx 40$, giving a Euclidean shift orders of magnitude larger than SimpleNet's
+$\sigma = 0.015$ noise ($\sigma^2 C \approx 0.35$). The discriminator is trained
+to separate ``real'' from ``shifted ${\sim}100\times$ more than a real defect,''
+learns a decision boundary far out, and misses subtle real defects.
+
+\medskip
+\noindent
+(An earlier hypothesis --- that localization needs \emph{mixed} real/fake patches
+per image --- was discarded: SimpleNet localizes well with all-fake training.)
+
+\subsection{Decoupling magnitude from $T_p$ --- the \code{radius} parameter}
+
+\paragraph{Change.}
+Added a \code{radius} parameter to \code{generate\_anomaly\_at\_patch} /
+\code{generate\_anomalies}, exposed as \code{TSLRG\_RADIUS}:
+\begin{equation}
+  r \sim
+  \begin{cases}
+    \sqrt{T_p} + \delta \cdot U(0,1) & \text{\code{radius} is \code{None} (PDF threshold semantics)} \\[4pt]
+    \code{radius} \cdot U(0,1) & \text{\code{radius} is a float (decoupled from $T_p$; a curriculum from 0 up)}
+  \end{cases}
+\end{equation}
+
+\paragraph{Reasoning.}
+If the optimal anomaly magnitude is a property of the \emph{feature space} (as
+SimpleNet's hand-tuned $\sigma$ suggests), it should be a free parameter, not
+pinned to a statistical threshold that we already saw can swing wildly between
+fits.
+
+\paragraph{Open empirical question.}
+It was observed that \emph{increasing} $\delta$ also raises scores --- which
+tensions with the ``magnitude is too large'' hypothesis and suggests the optimal
+magnitude for \code{anchored} mode (subspace direction) is simply different from
+SimpleNet's (isotropic direction). The current state is a magnitude sweep:
+$\code{radius} \in \{0.5, 1, 5, \dots\}$ vs.\ large $\delta$, watching whether
+anomaly-pixel AUROC tracks image AUROC.
+
+\subsection{What \code{anchored + radius} actually is, vs.\ SimpleNet}
+
+Once $r$ is decoupled from $T_p$, the PDF's threshold story is gone. What remains
+is \textbf{SimpleNet's noise injection, oriented and scaled by per-patch PCA}:
+
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+ & SimpleNet & \code{anchored + radius} \\
+\midrule
+Anchor          & real feature              & real feature \\
+Direction       & isotropic in $\mathbb{R}^C$ & uniform in $\Up$ subspace ($k$ dims) \\
+Per-axis weight & uniform $\sigma$          & $\sqrt{\bLambda_p}$ (data-variance amplitude) \\
+Per-patch       & single global $\sigma$    & own $(\Up, \bLambda_p)$ for all $1296$ patches \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent
+The retained value over vanilla SimpleNet: no noise budget wasted on
+zero-variance directions, and patch-adaptive scaling. Whether that converts to
+better AUROC than vanilla SimpleNet is the live experiment.
+
+%======================================================================
+\section{Current State \& Open Questions}
+%======================================================================
+
+\paragraph{Working configuration.}
+\code{neighborhood=3}, \code{k=256}, \code{eps\_method="ppca"},
+\code{TSLRG\_ANOMALY\_MODE=anchored}. Image AUROC $0.8$.
+
+\paragraph{Open.}
+\begin{enumerate}[noitemsep]
+  \item \textbf{Magnitude calibration} --- sweep \code{TSLRG\_RADIUS} / $\delta$;
+    does anomaly-pixel AUROC follow image AUROC, or is localization gated by
+    something else?
+  \item \textbf{Direction distribution} --- \code{anchored} samples
+    $\mathbf{v}_k$ uniformly on the $k$-sphere. Do real defects deviate uniformly
+    across PCs, or along specific ones? A mismatch here would cap localization
+    regardless of magnitude.
+  \item \textbf{Head-to-head} --- \code{anchored + radius} vs.\ restoring vanilla
+    SimpleNet noise, same backbone and discriminator, all MVTec classes.
+\end{enumerate}
+
+\paragraph{Methodological takeaway.}
+Three assumptions, each broken by a diagnostic chosen to \emph{match the method's
+own definition}:
+\begin{itemize}[noitemsep]
+  \item \emph{``It matches the spec''} $\to$ line-by-line audit $\to$ fixed 4
+    deviations.
+  \item \emph{``The model fits the data''} $\to$ Mahalanobis histogram (not t-SNE)
+    $\to$ found over-spread $\to$ neighborhood pooling $+$ PPCA $\varepsilon$ made
+    it self-consistent.
+  \item \emph{``It helps the task''} $\to$ AUROC $\to$ found $<0.5$ inversion
+    $\to$ diagnosed Euclidean-vs-Mahalanobis geometry mismatch $\to$
+    \code{anchored} mode $\to$ $0.8$.
+\end{itemize}
+The recurring lesson: \textbf{a mathematically faithful implementation of a method
+can still be invalid for the data and useless for the task} --- and each of those
+is a separate question needing its own diagnostic in its own metric.
+
+%======================================================================
+\appendix
+\section{File-by-file change log}
+%======================================================================
+
+\subsection*{\code{low\_rank\_gaussian.py}}
+\begin{itemize}[noitemsep]
+  \item $\varepsilon$ formula: \code{mean} $\to 0.5\times\code{median}$ (Act 1),
+    then $\to$ \code{eps\_method} param with \code{"ppca"} default
+    ($\mathrm{mean}(\text{trailing})$, Sec.~\ref{sec:ppca}); \code{"median"}
+    retained.
+  \item $\varepsilon$ fallback: $10^{-6} \to 10^{-2}$.
+  \item Anomaly radius: fixed $\sqrt{T}+\Delta$ $\to$ sampled
+    $\sqrt{T}+\delta\,U(0,1)$; later a \code{radius} parameter overrides the
+    $T_p$-based default entirely.
+  \item \code{neighborhood} parameter $+$ $w\times w$ reflection-padded windowed
+    covariance fit; \code{spatial\_shape} handling.
+  \item New: \code{generate\_normal\_at\_patch},
+    \code{generate\_normal\_features}, \code{generate\_anomaly\_at\_patch},
+    refactored \code{generate\_anomalies}, \code{\_sigma\_half\_w}.
+  \item \code{mode} parameter on anomaly generators:
+    \code{default} / \code{subspace} / \code{anchored}; \code{anchored} requires
+    real-feature \code{anchor}/\code{anchors}.
+  \item \code{state\_dict} / \code{load\_state\_dict} extended with
+    \code{neighborhood}, \code{spatial\_shape}, \code{eps\_method}
+    (backward-compatible defaults for old checkpoints).
+  \item \code{--neighborhood} CLI flag, threaded through \code{run}.
+\end{itemize}
+
+\subsection*{\code{simplenet.py}}
+\begin{itemize}[noitemsep]
+  \item \code{self.tslrg\_anomaly\_mode} from \code{TSLRG\_ANOMALY\_MODE} env var.
+  \item \code{self.tslrg\_radius} from \code{TSLRG\_RADIUS} env var.
+  \item Discriminator training: \code{generate\_anomalies} call now passes
+    \code{mode}, \code{radius}, and --- for \code{anchored} --- reshapes
+    \code{true\_feats} to $(B, P, C)$ as \code{anchors}.
+\end{itemize}
+
+\subsection*{\code{tsne\_gaussian\_vs\_normal.py}}
+\begin{itemize}[noitemsep]
+  \item Switched to the class's \code{generate\_normal\_at\_patch} /
+    \code{generate\_anomaly\_at\_patch} (removed duplicated local sampling
+    helpers).
+  \item Added Mahalanobis$^2$ histogram panel $+$ \code{mahal2} helper $+$
+    per-group stats print.
+  \item \code{--anomaly\_mode} flag; samples real features as anchors for
+    \code{anchored} mode.
+\end{itemize}
+
+\subsection*{\code{low\_rank\_gaussian.sh}}
+\begin{itemize}[noitemsep]
+  \item \code{NEIGHBORHOOD} env var $\to$ \code{--neighborhood} flag.
+\end{itemize}
+
+\subsection*{\code{run\_tsne\_gaussian\_vs\_normal.sh}}
+\begin{itemize}[noitemsep]
+  \item \code{ANOMALY\_MODE} env var $\to$ \code{--anomaly\_mode} flag.
+\end{itemize}
+
+\end{document}

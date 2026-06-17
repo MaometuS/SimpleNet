@@ -1,0 +1,375 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath, amssymb, amsthm}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{listings}
+\usepackage{microtype}
+\hypersetup{colorlinks=true, linkcolor=blue, urlcolor=blue}
+
+\lstset{
+  basicstyle=\ttfamily\small,
+  keywordstyle=\bfseries,
+  commentstyle=\itshape\color{gray!70!black},
+  showstringspaces=false,
+  columns=fullflexible,
+  frame=single,
+  framesep=4pt,
+  rulecolor=\color{gray!40},
+  language=Python,
+  morekeywords={for, in, def, return, with},
+}
+
+\newcommand{\code}[1]{\texttt{#1}}
+\newcommand{\Up}{\mathbf{U}_p}
+\newcommand{\Lp}{\boldsymbol{\Lambda}_p}
+\newcommand{\bmu}{\boldsymbol{\mu}}
+\newcommand{\bSigma}{\boldsymbol{\Sigma}}
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\proj}{\mathrm{proj}}
+\newcommand{\resid}{\mathbf{r}}
+
+\title{The Mahalanobis$^2$ Chart \\
+       \large What it measures, where the zero is,\\ and how it is built}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+
+\noindent
+This note unpacks the histogram on the right-hand side of
+\code{tsne\_gaussian\_vs\_normal.py}: the ``Mahalanobis$^2$ under fitted
+$\bSigma_p$'' panel. It answers three things precisely:
+\begin{enumerate}[noitemsep]
+  \item What the $x$-axis is measuring (with the origin spelled out).
+  \item What we are measuring the distance \emph{from}.
+  \item How the chart is constructed, line by line.
+\end{enumerate}
+
+\tableofcontents
+
+%======================================================================
+\section{What the $x$-axis is: the score \texorpdfstring{$s(\mathbf{x})$}{s(x)}}
+%======================================================================
+
+The $x$-axis is the value of a single scalar function, applied to each feature
+vector. We call it the \emph{score} or \emph{Mahalanobis$^2$}:
+\begin{equation}
+  \boxed{\; s(\mathbf{x}) \;=\; (\mathbf{x} - \bmu_p)^\top \bSigma_p^{-1} (\mathbf{x} - \bmu_p) \;}
+  \label{eq:mahal-def}
+\end{equation}
+where
+\begin{itemize}[noitemsep]
+  \item $\mathbf{x} \in \R^{C}$ is one feature vector at patch $p$ (here $C=1536$),
+  \item $\bmu_p \in \R^{C}$ is the per-patch mean of the training features,
+  \item $\bSigma_p \in \R^{C \times C}$ is the per-patch fitted covariance,
+    $\bSigma_p = \Up \Lp \Up^\top + \varepsilon_p \mathbf{I}$.
+\end{itemize}
+The score is always non-negative, $s(\mathbf{x}) \ge 0$.
+
+\subsection{Where is the zero?}
+
+From~\eqref{eq:mahal-def}, $s(\mathbf{x}) = 0$ \emph{if and only if}
+$\mathbf{x} = \bmu_p$. Concretely:
+\begin{equation}
+  s(\mathbf{x}) = 0 \quad\Longleftrightarrow\quad \mathbf{x} \;=\; \bmu_p.
+\end{equation}
+So the \textbf{origin of the $x$-axis is the patch mean itself}. Moving rightward
+in the chart means ``further from $\bmu_p$, as measured by the model's own ruler.''
+
+\paragraph{Why don't we ever \emph{see} zero on the plot?}
+The chart uses \code{set\_xscale("log")} and the bin edges are
+\code{logspace(log10(lo), log10(hi), 60)} with \code{lo = max(min, 1e-3)}. On a
+log axis, $0$ sits at $-\infty$ and cannot be drawn. The leftmost bin therefore
+represents ``very close to $\bmu_p$,'' not ``exactly at $\bmu_p$.'' In practice
+no real or synthetic sample lands at $s = 0$ anyway --- the probability of any
+$C$-dimensional vector being \emph{exactly} the mean is zero.
+
+\subsection{What are we measuring the distance \emph{from}?}
+
+\textbf{From $\bmu_p$, the per-patch mean.} Not from the origin of feature
+space, not from any other sample, not from a global mean across the dataset.
+For each patch $p$ we have its own $\bmu_p$, and the chart in
+\code{tsne\_gaussian\_vs\_normal.py} is for a single patch index chosen by the
+\code{--patch\_idx} flag.
+
+\subsection{Why is it called a \emph{Mahalanobis} distance?}
+
+Because the metric used to measure the distance is $\bSigma_p^{-1}$, not the
+identity. Whitening
+$\mathbf{w} = \bSigma_p^{-1/2}(\mathbf{x} - \bmu_p)$ transforms
+\eqref{eq:mahal-def} into a plain squared Euclidean length:
+\begin{equation}
+  s(\mathbf{x}) \;=\; \lVert \mathbf{w} \rVert_2^2 \;=\; \sum_{i=1}^{C} w_i^2.
+\end{equation}
+In whitened coordinates each axis has unit variance, so $s$ counts displacement
+in \emph{standard-deviation units} along each direction. Directions with large
+data variance contribute proportionally \emph{less} (the metric divides by
+$\lambda_j$); directions with small variance contribute proportionally
+\emph{more}. The Mahalanobis ruler stretches the cluster into a sphere before
+measuring.
+
+%======================================================================
+\section{The exact formula used in code}
+%======================================================================
+
+The implementation does not literally invert $\bSigma_p$. It uses the low-rank
+plus isotropic structure to split the score into two parts. Define, for a
+centered feature $\mathbf{d} = \mathbf{x} - \bmu_p$:
+\begin{align}
+  \mathbf{p}    &\;=\; \Up^\top \mathbf{d}  \quad\in\R^{k}
+    && \text{(coordinates of $\mathbf{d}$ inside the modelled subspace),} \\
+  \resid &\;=\; \mathbf{d} - \Up\Up^\top \mathbf{d}  \quad\in\R^{C}
+    && \text{(component of $\mathbf{d}$ in the orthogonal complement).}
+\end{align}
+Then the \code{mahal2} function in
+\code{tsne\_gaussian\_vs\_normal.py} computes
+\begin{equation}
+  \boxed{\;
+    s(\mathbf{x}) \;=\;
+    \underbrace{\sum_{j=1}^{k}\frac{p_j^{2}}{\lambda_j}}_{\text{subspace term}}
+    \;+\;
+    \underbrace{\frac{\lVert \resid \rVert_2^{2}}{\varepsilon_p}}_{\text{residual term}}
+  \;}
+  \label{eq:mahal-code}
+\end{equation}
+\paragraph{Why split it.}
+$\bSigma_p^{-1}$ decomposes naturally into two orthogonal pieces --- one acting
+inside $\mathrm{span}(\Up)$ (with eigenvalues $1/\lambda_j$), one acting on the
+orthogonal complement (with eigenvalue $1/\varepsilon_p$). The two terms
+in~\eqref{eq:mahal-code} are exactly those two pieces applied to $\mathbf{d}$.
+The split is also what makes the score cheap: we never form a $1536 \times 1536$
+inverse, just a $k$-dimensional projection and a single norm.
+
+\paragraph{A small but deliberate approximation.}
+The exact inverse uses $1/(\lambda_j + \varepsilon_p)$ on the subspace. The code
+uses $1/\lambda_j$ --- so~\eqref{eq:mahal-code} is only equal to
+\eqref{eq:mahal-def} in the limit $\varepsilon_p \ll \lambda_j$. We accept this
+because the same score is used in \code{fit()} to compute $T_p$ (the per-patch
+threshold). Using the same scoring function for the histogram \emph{and} the
+threshold keeps them on a single, consistent ruler.
+
+%======================================================================
+\section{The three populations on the chart}
+%======================================================================
+
+Three sets of vectors are scored under \eqref{eq:mahal-code} and overlaid as
+histograms. They share the same metric and the same fitted $\bSigma_p$; only
+their construction differs.
+
+\begin{description}[itemsep=2pt]
+  \item[\textbf{Real normals} (blue).] $\{\mathbf{x}_i\}$, the actual training
+    features extracted at this patch. Source: \code{collect\_patch\_features}.
+    These are the ground truth --- whatever distribution they form is the data.
+  \item[\textbf{Gaussian draws} (orange).] $\mathbf{x} = \bmu_p +
+    \bSigma_p^{1/2}\mathbf{w}$, $\mathbf{w} \sim \mathcal{N}(0,\mathbf{I})$, by
+    \code{generate\_normal\_at\_patch}. These are samples from the fitted model
+    itself --- the model's own opinion of ``what normal looks like.''
+  \item[\textbf{Boundary anomalies} (red).] $\mathbf{x} = \bmu_p +
+    \bSigma_p^{1/2}(r\cdot\mathbf{u})$ with $\mathbf{u}$ uniform on the unit
+    sphere and $r$ chosen near $\sqrt{T_p}$, by
+    \code{generate\_anomaly\_at\_patch}. By construction these sit on a
+    Mahalanobis shell just past the threshold.
+\end{description}
+
+%======================================================================
+\section{The two reference lines}
+%======================================================================
+
+\paragraph{$T_p$ (black dashed).}
+The per-patch \emph{anomaly threshold}: the $q$th-percentile of $s(\mathbf{x}_i)$
+over the real training features at patch $p$ (default $q = 0.99$). By
+construction, $\approx 99\%$ of real normals fall to the left of this line.
+Boundary anomalies are designed to land just to its right.
+
+\paragraph{$C$ (gray dotted).}
+The feature dimensionality, here $1536$. Its meaning comes from a single
+statistical fact: if $\mathbf{x} \sim \mathcal{N}(\bmu_p, \bSigma_p)$ exactly,
+then
+\begin{equation}
+  s(\mathbf{x}) \;\sim\; \chi^2_{C}, \qquad
+  \E[s(\mathbf{x})] = C.
+\end{equation}
+So $C$ marks where a \emph{genuine sample from the fitted model} is expected to
+sit. Distance from $C$ to the actual blue (real-data) mode is a direct readout
+of how badly the fitted $\bSigma_p$ misrepresents the data.
+
+%======================================================================
+\section{How the chart is built (pseudocode)}
+%======================================================================
+
+End-to-end construction, distilled from
+\code{tsne\_gaussian\_vs\_normal.py}:
+
+\begin{lstlisting}
+# 1. Pick a patch and pull its fit parameters out of the checkpoint.
+mu_p, U_p, Lambda_p, eps_p, T_p = tslrg.{mu,U,Lambda,eps,T}[patch_idx]
+C = tslrg.mu.shape[1]                          # 1536
+
+# 2. Gather the three populations.
+normal = collect_patch_features(...)           # (N_real, C)
+gauss  = tslrg.generate_normal_at_patch(p, n)  # (n, C)
+bdry   = tslrg.generate_anomaly_at_patch(p, m) # (m, C)
+
+# 3. Score every vector with mahal2 (Eq. 4 above).
+def mahal2(x, mu_p, U_p, Lambda_p, eps_p):
+    d    = x - mu_p
+    proj = d @ U_p                             # (B, k)
+    return (proj ** 2 / Lambda_p).sum(-1) \
+         + ((d - proj @ U_p.T) ** 2).sum(-1) / eps_p
+
+m2_groups = {
+    0: mahal2(normal, mu_p, U_p, Lambda_p, eps_p),
+    1: mahal2(gauss,  mu_p, U_p, Lambda_p, eps_p),
+    2: mahal2(bdry,   mu_p, U_p, Lambda_p, eps_p),
+}
+
+# 4. Shared geometric bins so the three histograms are comparable.
+all_vals = concatenate(values of m2_groups)
+lo, hi   = max(all_vals.min(), 1e-3), all_vals.max()
+bins     = logspace(log10(lo), log10(hi), num=60)
+
+# 5. Overlay area-normalized histograms.
+for g, color in zip(groups, [BLUE, ORANGE, RED]):
+    ax.hist(m2_groups[g], bins=bins, density=True, alpha=0.5, color=color)
+
+# 6. Two reference lines and a log x-axis.
+ax.axvline(T_p, color="black", linestyle="--", label=f"T_p={T_p:.3g}")
+ax.axvline(C,   color="gray",  linestyle=":",  label=f"C={C}")
+ax.set_xscale("log")
+ax.set_xlabel("Mahalanobis^2")
+ax.set_ylabel("density")
+\end{lstlisting}
+
+\paragraph{What each step contributes.}
+
+\begin{itemize}[itemsep=2pt]
+  \item \textbf{Single patch (Step 1).} The chart is for one patch index. All
+    scoring uses that patch's $(\bmu_p, \Up, \Lp, \varepsilon_p, T_p)$, and the
+    real features collected are at that patch only.
+  \item \textbf{Same scorer (Step 3).} \emph{Every} vector --- real, model
+    draw, anomaly --- is scored by the \emph{same} \code{mahal2} function. The
+    chart compares apples to apples.
+  \item \textbf{Shared geometric bins (Step 4).} The same 60-edge log-spaced
+    grid is used for all three groups, so heights are comparable at a given
+    $x$. Geometric spacing matches the log $x$-axis and gives narrow bins where
+    a tight spike (e.g.\ the boundary peak) needs resolution.
+  \item \textbf{\code{density=True} (Step 5).} The three populations have
+    different sample counts (e.g.\ $N_{\text{real}} = 280$,
+    $n_{\text{gauss}} = 250$, $m_{\text{bdry}} = 200$). Without normalization, a
+    larger group's bars would tower regardless of shape. \code{density=True}
+    rescales each histogram so its area integrates to $1$ in \emph{linear} $x$
+    units, making the \emph{shapes} comparable.
+  \item \textbf{Reference lines (Step 6).} $T_p$ is read from the fit;
+    $C$ is the feature dimensionality (the $\chi^2_C$ mean).
+\end{itemize}
+
+\subsection{Subtlety: log axis + \code{density=True} + geometric bins}
+
+With geometric bins of width $\Delta_i$ growing with $x$, the height
+\code{density=True} assigns to bin $i$ is
+\begin{equation}
+  h_i \;=\; \frac{\text{count}_i}{N_{\text{total}} \cdot \Delta_i}.
+\end{equation}
+So a tall bar at small $x$ has a small linear $\Delta_i$; a bar with the same
+number of samples placed at large $x$ has a much larger $\Delta_i$ and therefore
+appears \emph{shorter}. Within one group, heights are not directly comparable
+across the $x$-range; \emph{between} groups at the same $x$ they are. This is
+exactly what we want here, where the question is always
+``where does each group's mass sit relative to $C$ and $T_p$?''
+
+%======================================================================
+\section{How to read the chart, in one sentence per group}
+%======================================================================
+
+\begin{itemize}[itemsep=2pt]
+  \item \textbf{Blue} (real normals): should sit at $C$ if the fit is honest;
+    drift left $\Rightarrow$ over-spread $\bSigma_p$; drift right
+    $\Rightarrow$ under-spread.
+  \item \textbf{Orange} (Gaussian draws): \emph{always} sits at $C$ by
+    construction (Section~7); a fixed reference, not a diagnostic.
+  \item \textbf{Red} (boundary anomalies): a tight spike just past $T_p$ if
+    \code{generate\_anomaly\_at\_patch} works; the verification that the
+    anomaly construction is doing what it claims.
+\end{itemize}
+
+%======================================================================
+\section{Why orange is pinned to $C$ (the circularity)}
+%======================================================================
+
+For $\mathbf{x} = \bmu_p + \bSigma_p^{1/2}\mathbf{w}$ with
+$\mathbf{w} \sim \mathcal{N}(0,\mathbf{I})$:
+\begin{equation}
+  s(\mathbf{x}) \;=\; \mathbf{w}^\top \bigl(\bSigma_p^{1/2}\bigr)^{\!\top}
+  \bSigma_p^{-1} \bigl(\bSigma_p^{1/2}\bigr)\,\mathbf{w}
+  \;=\; \mathbf{w}^\top \mathbf{w}
+  \;\sim\; \chi^2_{C},
+\end{equation}
+regardless of which $\bSigma_p$ we fit. \emph{Same Sigma is used to generate
+the sample and to score it}, so the whitening cancels exactly and the score
+follows $\chi^2_C$ with mean $C$. Orange is a tautology --- which is what makes
+it a reliable reference marker. The informative variable is blue's position
+relative to it.
+
+%======================================================================
+\section{Why blue moves between fits}
+%======================================================================
+
+Real features are not sampled from $\mathcal{N}(\bmu_p, \bSigma_p^{\text{fit}})$
+--- they are sampled from the (unknown) true feature distribution with some
+true covariance $\bSigma_p^{\text{true}}$. So for real $\mathbf{x}$:
+\begin{equation}
+  \E\bigl[s(\mathbf{x}_{\text{real}})\bigr]
+    \;=\; \E\bigl[\,\mathrm{tr}\bigl(\bSigma_p^{-1,\text{fit}}\,
+                (\mathbf{x}-\bmu_p)(\mathbf{x}-\bmu_p)^\top\bigr)\bigr]
+    \;=\; \mathrm{tr}\bigl(\bSigma_p^{-1,\text{fit}}\,\bSigma_p^{\text{true}}\bigr).
+\end{equation}
+Three regimes:
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+Relationship & $\mathrm{tr}(\bSigma_p^{-1,\text{fit}}\,\bSigma_p^{\text{true}})$
+  & Blue sits \\
+\midrule
+$\bSigma_p^{\text{fit}} = \bSigma_p^{\text{true}}$
+  & $\mathrm{tr}(\mathbf{I}) = C$
+  & at $C$ \\
+$\bSigma_p^{\text{fit}} > \bSigma_p^{\text{true}}$ (over-spread)
+  & $< C$
+  & left of $C$ \\
+$\bSigma_p^{\text{fit}} < \bSigma_p^{\text{true}}$ (under-spread)
+  & $> C$
+  & right of $C$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+The real features themselves never change --- only the \emph{ruler}
+$\bSigma_p^{-1,\text{fit}}$ does. Blue's position is a direct readout of
+covariance mismatch.
+
+%======================================================================
+\section{Summary}
+%======================================================================
+
+\begin{itemize}[itemsep=2pt]
+  \item The $x$-axis is $s(\mathbf{x}) = (\mathbf{x}-\bmu_p)^\top
+    \bSigma_p^{-1}(\mathbf{x}-\bmu_p)$, with the origin at $\mathbf{x} = \bmu_p$
+    (the per-patch mean).
+  \item Distances are measured \emph{from the patch mean} in the metric induced
+    by the fitted covariance $\bSigma_p$; directions of low variance count for
+    much more than directions of high variance.
+  \item The code uses the low-rank-plus-isotropic split (Eq.~\ref{eq:mahal-code})
+    rather than a literal matrix inverse; the same function scores the
+    histogram and computes $T_p$.
+  \item Orange (Gaussian draws) is forced to sit at $C$ by the structure of
+    the score; blue (real normals) sits at $C$ \emph{only when the fit is
+    correct}, which is what makes the chart a useful diagnostic of covariance
+    misspecification.
+\end{itemize}
+
+\end{document}
