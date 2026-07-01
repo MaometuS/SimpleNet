@@ -1,0 +1,3 @@
+Row Names,instance_auroc,full_pixel_auroc,anomaly_pixel_auroc
+mvtec_screw,0.815740930518549,0.0807611563054063,-0.0
+Mean,0.815740930518549,0.0807611563054063,0.0
