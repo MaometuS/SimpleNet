@@ -739,11 +739,29 @@ class SimpleNet(torch.nn.Module):
                     P = self.tslrg.mu.shape[0]
                     C = true_feats.shape[1]
                     B = true_feats.shape[0] // P
-                    patch_mask = self._sample_patch_mask(B, P, true_feats.device)
-                    true_feats_bpc = true_feats.detach().reshape(B, P, C)
                     if self.tslrg_anomaly_mode in ("simplenet_noise", "noise"):
-                        fake_feats = true_feats_bpc + torch.randn_like(true_feats_bpc) * self.noise_std
+                        patch_mask = torch.ones(B, P, dtype=torch.bool, device=true_feats.device)
+                        noise_idxs = torch.randint(
+                            0, self.mix_noise, torch.Size([true_feats.shape[0]]),
+                            device=self.device,
+                        )
+                        noise_one_hot = torch.nn.functional.one_hot(
+                            noise_idxs, num_classes=self.mix_noise
+                        ).to(self.device)
+                        noise = torch.stack([
+                            torch.normal(
+                                0,
+                                self.noise_std * 1.1**k,
+                                true_feats.shape,
+                                device=self.device,
+                            )
+                            for k in range(self.mix_noise)
+                        ], dim=1)
+                        noise = (noise * noise_one_hot.unsqueeze(-1)).sum(1)
+                        fake_feats = true_feats + noise
                     elif self.tslrg_anomaly_mode == "anchored":
+                        patch_mask = self._sample_patch_mask(B, P, true_feats.device)
+                        true_feats_bpc = true_feats.detach().reshape(B, P, C)
                         anchors = true_feats.detach().reshape(B, P, C)
                         fake_feats = self.tslrg.generate_anomalies(
                             B, mode="anchored", anchors=anchors,
@@ -751,22 +769,33 @@ class SimpleNet(torch.nn.Module):
                             radius_mode=self.tslrg_radius_mode,
                             device=self.device,
                         )
+                        fake_feats = torch.where(
+                            patch_mask.unsqueeze(-1),
+                            fake_feats.to(self.device),
+                            true_feats_bpc,
+                        )
+                        fake_feats = self._refine_fake_features(
+                            true_feats_bpc, fake_feats, patch_mask
+                        )
+                        fake_feats = fake_feats.reshape(true_feats.shape)
                     else:
+                        patch_mask = self._sample_patch_mask(B, P, true_feats.device)
+                        true_feats_bpc = true_feats.detach().reshape(B, P, C)
                         fake_feats = self.tslrg.generate_anomalies(
                             B, mode=self.tslrg_anomaly_mode,
                             radius=self.tslrg_radius,
                             radius_mode=self.tslrg_radius_mode,
                             device=self.device,
                         )
-                    fake_feats = torch.where(
-                        patch_mask.unsqueeze(-1),
-                        fake_feats.to(self.device),
-                        true_feats_bpc,
-                    )
-                    fake_feats = self._refine_fake_features(
-                        true_feats_bpc, fake_feats, patch_mask
-                    )
-                    fake_feats = fake_feats.reshape(true_feats.shape)
+                        fake_feats = torch.where(
+                            patch_mask.unsqueeze(-1),
+                            fake_feats.to(self.device),
+                            true_feats_bpc,
+                        )
+                        fake_feats = self._refine_fake_features(
+                            true_feats_bpc, fake_feats, patch_mask
+                        )
+                        fake_feats = fake_feats.reshape(true_feats.shape)
 
                     scores = self.discriminator(torch.cat([true_feats, fake_feats]))
                     true_scores = scores[:len(true_feats)]

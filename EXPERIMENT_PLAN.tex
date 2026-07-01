@@ -1,0 +1,848 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath, amssymb}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{listings}
+\usepackage{microtype}
+
+\hypersetup{colorlinks=true, linkcolor=blue, urlcolor=blue}
+
+\lstset{
+  basicstyle=\ttfamily\small,
+  columns=fullflexible,
+  frame=single,
+  framesep=4pt,
+  rulecolor=\color{gray!40},
+  showstringspaces=false,
+  breaklines=true
+}
+
+\newcommand{\code}[1]{\texttt{#1}}
+\newcommand{\Up}{\mathbf{U}_p}
+\newcommand{\Lp}{\boldsymbol{\Lambda}_p}
+\newcommand{\bmu}{\boldsymbol{\mu}}
+\newcommand{\R}{\mathbb{R}}
+
+\title{Feature-Level Anomaly Generation Experiments\\
+       \large Experiment Plan, Hypotheses, and Interpretation}
+\author{SimpleNet feature-anomaly research project}
+\date{}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This document explains the experiment suite implemented for the SimpleNet
+feature-anomaly project. The purpose is to test whether synthetic anomalies at
+the feature level can be made more useful than SimpleNet's original random
+Gaussian noise. Each experiment changes one controlled aspect of the anomaly
+generator: anchor, radius calibration, spatial sparsity, or discriminator-guided
+refinement. The intended output is not only an AUROC table, but a causal story
+about which geometric property of feature-space anomalies matters for image
+detection and pixel localization.
+\end{abstract}
+
+\tableofcontents
+
+%======================================================================
+\section{Research Question}
+%======================================================================
+
+SimpleNet trains a discriminator using normal patch features as positives and
+synthetic anomalous features as negatives. In the original setup, fake features
+are produced by adding isotropic Gaussian noise:
+\begin{equation}
+  \mathbf{x}_{\mathrm{fake}}
+    = \mathbf{x}_{\mathrm{real}} + \boldsymbol{\epsilon},
+  \qquad
+  \boldsymbol{\epsilon} \sim \mathcal{N}(0, \sigma^2 I).
+\end{equation}
+
+\noindent
+This is simple and fast, but it ignores the geometry of the normal feature
+distribution. The central hypothesis of this project is:
+
+\begin{quote}
+Feature-level anomalies are more useful when they are anchored on real normal
+features, move in meaningful local feature directions, have calibrated
+magnitude, and provide spatially localized supervision.
+\end{quote}
+
+\noindent
+The experiments therefore compare random noise against a geometry-aware family
+of anomalies derived from the fitted per-patch model
+\begin{equation}
+  \Sigma_p = \Up \Lp \Up^\top + \varepsilon_p I,
+\end{equation}
+where $p$ indexes spatial patch location. In the most important setting, an
+anomaly is generated as
+\begin{equation}
+  \mathbf{x}_{\mathrm{fake},p}
+    =
+  \mathbf{x}_{\mathrm{real},p}
+    +
+  r_p\, \Up \sqrt{\Lp}\,\mathbf{v},
+  \qquad
+  \mathbf{v} \sim \mathrm{Uniform}(\mathbb{S}^{k-1}).
+\end{equation}
+
+%======================================================================
+\section{Provenance of the Ideas}
+%======================================================================
+
+This section records where each idea in the experiment suite comes from. The
+goal is not to claim that every component is novel in isolation. The goal is to
+make clear which prior ideas are being combined and what new question this
+project asks.
+
+\subsection{SimpleNet: the Baseline to Improve}
+
+The starting point is SimpleNet~\cite{simplenet}. SimpleNet introduced the
+specific training pattern used in this project: extract local features from a
+pretrained backbone, optionally adapt them, synthesize anomalous features by
+adding Gaussian noise to normal features, and train a binary discriminator. This
+project keeps the SimpleNet discriminator framing but questions whether the
+feature-level anomaly generator should be isotropic random noise.
+
+\paragraph{Taken idea.}
+Feature-space synthetic negatives can train a discriminator for anomaly
+detection.
+
+\paragraph{Project modification.}
+Replace directionless Gaussian noise with geometry-aware feature perturbations.
+
+\subsection{PaDiM: Patch-Wise Gaussian Feature Geometry}
+
+The use of a per-patch Gaussian model is inspired by PaDiM~\cite{padim}. PaDiM
+models normal patch embeddings with multivariate Gaussian distributions and uses
+Mahalanobis distance for anomaly scoring. Our project borrows the patch-wise
+normal-distribution view, but uses it to synthesize training negatives rather
+than only to score test samples.
+
+\paragraph{Taken idea.}
+Normal patch features have spatially specific distributions that can be modeled
+with Gaussian statistics.
+
+\paragraph{Project modification.}
+Use the fitted covariance directions $\Up$ and scales $\Lp$ to generate fake
+features for discriminator training.
+
+\subsection{PatchCore: Respecting the Normal Feature Manifold}
+
+PatchCore~\cite{patchcore} motivates the broader view that nominal patch
+features themselves are the important object. It uses a representative memory
+bank of normal patch features and nearest-neighbor distance at inference. This
+project does not use a memory bank for scoring, but the anchored generator is
+conceptually aligned with PatchCore's emphasis on real normal patch features:
+fake samples should start from real normal anchors rather than from an abstract
+mean alone.
+
+\paragraph{Taken idea.}
+Real normal patch features provide a strong empirical representation of the
+normal manifold.
+
+\paragraph{Project modification.}
+Anchor synthetic negatives on real training features:
+\[
+  \mathbf{x}_{\mathrm{fake},p}
+  =
+  \mathbf{x}_{\mathrm{real},p} + \Delta_p.
+\]
+
+\subsection{CutPaste, NSA, DRAEM, and DeSTSeg: Synthetic Local Supervision}
+
+Image-level anomaly synthesis methods motivate the sparse-mask experiments.
+CutPaste~\cite{cutpaste} uses a simple cut-and-paste augmentation as a
+self-supervised anomaly signal. NSA~\cite{nsa} creates more natural synthetic
+anomalies by blending patches. DRAEM~\cite{draem} and DeSTSeg~\cite{destseg}
+show that synthetic corruptions and their masks can provide direct localization
+supervision.
+
+\paragraph{Taken idea.}
+Synthetic anomalies are more useful for localization when they are spatially
+local and come with an implicit or explicit mask.
+
+\paragraph{Project modification.}
+Apply synthetic perturbations only to selected feature patches and compute fake
+loss only on those patches:
+\[
+  \mathcal{L}_{\mathrm{fake}}
+  =
+  \frac{1}{|\Omega|}
+  \sum_{p \in \Omega}
+  \max(0, D(\mathbf{x}_{\mathrm{fake},p}) + m).
+\]
+
+\subsection{GLASS: Gradient-Guided Hard Feature Negatives}
+
+GLASS~\cite{glass} is the closest recent inspiration for the gradient-refinement
+experiments. It argues that anomaly synthesis should be controllable and should
+cover weak, near-in-distribution defects. Its feature-level synthesis uses
+gradient ascent and projection constraints to create useful hard negatives.
+
+\paragraph{Taken idea.}
+Feature-level synthetic anomalies should not be purely random; they can be
+guided by the current model to produce harder, more informative negatives.
+
+\paragraph{Project modification.}
+Start from anchored PCA anomalies, then take discriminator-guided refinement
+steps while projecting updates back into the fitted patch PCA subspace and
+clamping their Mahalanobis radius.
+
+\subsection{CRAS: Distance-Guided Magnitude Calibration}
+
+CRAS~\cite{cras} motivates the radius-calibration experiments. Its anomaly
+synthesis strategy adaptively adjusts noise based on normal-data distribution to
+reduce normal/anomaly overlap. This supports our suspicion that a single global
+noise scale, or a raw Mahalanobis threshold radius, may be poorly calibrated for
+training.
+
+\paragraph{Taken idea.}
+Synthetic anomaly magnitude should depend on the position of the normal sample
+relative to the normal distribution.
+
+\paragraph{Project modification.}
+Introduce \code{patch} and \code{anchor} radius modes:
+\[
+  r_p = \rho \sqrt{T_p/C}U(0,1),
+  \qquad
+  r_{i,p}
+  =
+  \rho
+  \max\left(
+    \sqrt{T_p} - \sqrt{s(\mathbf{x}_{i,p})},
+    0.05\sqrt{T_p}
+  \right)U(0,1).
+\]
+
+\subsection{Summary of Influence}
+
+\begin{center}
+\begin{tabular}{p{0.24\linewidth}p{0.27\linewidth}p{0.37\linewidth}}
+\toprule
+Project component & Main source idea & What we changed \\
+\midrule
+Vanilla noise baseline & SimpleNet & Re-run in current controlled path \\
+Patch Gaussian/PCA model & PaDiM & Use for synthesis, not only scoring \\
+Real-feature anchor & PatchCore & Perturb anchors rather than only score them \\
+Sparse patch masks & Image-level anomaly synthesis & Move masks to feature space \\
+Gradient refinement & GLASS & Constrain updates to per-patch PCA geometry \\
+Radius calibration & CRAS & Use patch/anchor distance in Mahalanobis units \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+%======================================================================
+\section{Common Experimental Setup}
+%======================================================================
+
+\subsection{Single-Class Protocol}
+
+The scripts are designed to run one MVTec class at a time. This reduces
+iteration time and makes failure analysis easier. The class is selected with
+\code{CLASSNAME}; if unset, the default is \code{screw}.
+
+\begin{lstlisting}[language=bash]
+CLASSNAME=screw bash experiments/run_01_anchored_threshold.sh
+\end{lstlisting}
+
+\noindent
+Common run-time overrides are:
+
+\begin{lstlisting}[language=bash]
+CLASSNAME=screw
+DATAPATH=/path/to/mvtec
+GPU=0
+SEED=0
+META_EPOCHS=40
+GAN_EPOCHS=4
+BATCH_SIZE=8
+RESULTS_PATH=results
+\end{lstlisting}
+
+\subsection{Metrics}
+
+The primary metrics are:
+
+\begin{description}[leftmargin=1.2in, style=nextline]
+  \item[Image AUROC]
+  Measures whether the detector can rank defective images above normal images.
+
+  \item[Pixel AUROC]
+  Measures whether high anomaly scores land on anomalous pixels.
+
+  \item[PRO]
+  Region-level localization metric; useful when defects are spatial objects
+  rather than isolated pixels.
+
+  \item[Anomaly-pixel AUROC]
+  Measures localization quality inside defective images. This is especially
+  important because the current project state suggests image-level detection is
+  ahead of pixel-level precision.
+\end{description}
+
+\subsection{Training Diagnostics}
+
+The discriminator logs:
+
+\begin{description}[leftmargin=1.2in, style=nextline]
+  \item[\code{p\_true}]
+  Fraction of real normal features classified past the positive margin.
+
+  \item[\code{p\_fake}]
+  Fraction of synthetic fake features classified past the negative margin.
+
+  \item[\code{fake\_patch\_ratio}]
+  Fraction of patches marked synthetic in sparse-mask experiments.
+
+  \item[\code{loss}]
+  Margin loss used to train the discriminator.
+\end{description}
+
+\noindent
+The important warning is that a high \code{p\_fake} alone is not success. If the
+fake samples are too easy or too far from realistic defects, the discriminator
+can learn a boundary that improves training loss while hurting localization.
+
+%======================================================================
+\section{Experiment Ladder}
+%======================================================================
+
+\subsection{Experiment 0: Vanilla SimpleNet Noise}
+
+\paragraph{Script.}
+\begin{lstlisting}[language=bash]
+bash experiments/run_00_simplenet_noise.sh
+\end{lstlisting}
+
+\paragraph{Configuration.}
+\begin{lstlisting}[language=bash]
+TSLRG_ANOMALY_MODE=simplenet_noise
+TSLRG_PATCH_MASK_MODE=all
+TSLRG_REFINE_STEPS=0
+\end{lstlisting}
+
+\paragraph{What it tests.}
+This is the clean baseline. It restores SimpleNet-style feature noise inside
+the same current training path~\cite{simplenet}:
+\begin{equation}
+  \mathbf{x}_{\mathrm{fake}}
+    =
+  \mathbf{x}_{\mathrm{real}} + \mathcal{N}(0, \sigma^2 I).
+\end{equation}
+
+\paragraph{Reasoning.}
+Any proposed feature generator must beat this baseline under the same backbone,
+projection, discriminator, loss, dataset split, and evaluation code. Without this
+baseline, improvements may come from incidental training differences rather than
+from the anomaly generator.
+
+\paragraph{Expected behavior.}
+This baseline should be stable and may localize surprisingly well because every
+patch is fake and the perturbation is small. Its weakness is geometric: noise is
+spent equally in every channel direction, including directions where normal
+features have little or no meaningful variation.
+
+\paragraph{Interpretation.}
+If geometry-aware variants do not beat this baseline, then either the proposed
+feature geometry is not aligned with real defects, or the synthetic perturbation
+magnitude is miscalibrated. This experiment is the anchor for all claims.
+
+%----------------------------------------------------------------------
+\subsection{Experiment 1: Anchored PCA, Threshold Radius}
+
+\paragraph{Script.}
+\begin{lstlisting}[language=bash]
+bash experiments/run_01_anchored_threshold.sh
+\end{lstlisting}
+
+\paragraph{Configuration.}
+\begin{lstlisting}[language=bash]
+TSLRG_ANOMALY_MODE=anchored
+TSLRG_RADIUS_MODE=threshold
+TSLRG_PATCH_MASK_MODE=all
+TSLRG_REFINE_STEPS=0
+\end{lstlisting}
+
+\paragraph{What it tests.}
+This is the previous best geometry-aware setting. Each fake feature is anchored
+on a real normal feature and shifted inside the fitted patch PCA subspace:
+\begin{equation}
+  \mathbf{x}_{\mathrm{fake},p}
+    =
+  \mathbf{x}_{\mathrm{real},p}
+    +
+  r_p\,\Up\sqrt{\Lp}\,\mathbf{v}.
+\end{equation}
+The radius still follows the fitted Mahalanobis threshold:
+\begin{equation}
+  r_p = \sqrt{T_p} + \delta\,U(0,1).
+\end{equation}
+
+\paragraph{Reasoning.}
+Anchoring removes one layer of modeling error: the base point is a real feature,
+not a Gaussian draw. The PCA direction avoids wasting perturbation budget in
+directions unsupported by normal data.
+
+\paragraph{Expected behavior.}
+This setting should preserve the earlier image-level gain. However, because
+$\sqrt{T_p}$ can be around $40$ in a $1536$-dimensional feature space, the shift
+may be much larger than subtle real defects. That can explain good image AUROC
+but weak anomaly-pixel AUROC.
+
+\paragraph{Interpretation.}
+If image AUROC is strong but localization is weak, the issue is likely not the
+anchor or subspace direction alone. The next suspect is radius magnitude.
+
+%----------------------------------------------------------------------
+\subsection{Experiment 2: Anchored PCA, Fixed Small Radius}
+
+\paragraph{Script.}
+\begin{lstlisting}[language=bash]
+bash experiments/run_02_anchored_fixed_radius.sh
+\end{lstlisting}
+
+\paragraph{Configuration.}
+\begin{lstlisting}[language=bash]
+TSLRG_ANOMALY_MODE=anchored
+TSLRG_RADIUS_MODE=threshold
+TSLRG_RADIUS=1
+TSLRG_PATCH_MASK_MODE=all
+TSLRG_REFINE_STEPS=0
+\end{lstlisting}
+
+\paragraph{What it tests.}
+This decouples anomaly magnitude from the fitted threshold:
+\begin{equation}
+  r_p = \rho\,U(0,1),
+\end{equation}
+where $\rho=\code{TSLRG\_RADIUS}$.
+
+\paragraph{Reasoning.}
+The statistical boundary $T_p$ answers a density-model question: how far is the
+edge of the normal cloud in Mahalanobis units? But discriminator training may
+need a different magnitude: small enough to mimic subtle defects, large enough
+to be learnable.
+
+\paragraph{Expected behavior.}
+A fixed small radius may improve localization if the threshold-radius anomalies
+were too extreme. It may reduce image AUROC if the anomalies become too subtle
+for early discriminator training.
+
+\paragraph{Interpretation.}
+If this improves pixel metrics but hurts image AUROC, the generator needs a
+curriculum or hard-negative schedule. If both improve, threshold radius was too
+large for the task.
+
+%----------------------------------------------------------------------
+\subsection{Experiment 3: Patch-Calibrated Radius Sweep}
+
+\paragraph{Script.}
+\begin{lstlisting}[language=bash]
+bash experiments/run_03_patch_radius_sweep.sh
+\end{lstlisting}
+
+\paragraph{Default sweep.}
+\begin{lstlisting}[language=bash]
+RADII="0.25 0.5 1 2 5"
+\end{lstlisting}
+
+\paragraph{Configuration.}
+\begin{lstlisting}[language=bash]
+TSLRG_ANOMALY_MODE=anchored
+TSLRG_RADIUS_MODE=patch
+TSLRG_PATCH_MASK_MODE=all
+TSLRG_REFINE_STEPS=0
+\end{lstlisting}
+
+\paragraph{What it tests.}
+The radius is normalized by the patch's fitted threshold and feature dimension.
+This combines the patch-distribution view from PaDiM~\cite{padim} with the
+distance-calibration motivation of CRAS~\cite{cras}:
+\begin{equation}
+  r_p = \rho \sqrt{\frac{T_p}{C}}\,U(0,1).
+\end{equation}
+
+\paragraph{Reasoning.}
+Different patches can have different thresholds because their normal feature
+variation differs. A global radius may under-perturb high-variance patches and
+over-perturb low-variance patches. Patch normalization makes a radius sweep more
+comparable across spatial locations.
+
+\paragraph{Expected behavior.}
+This should be more stable across classes and patches than a fixed radius. It is
+especially useful if per-patch $T_p$ varies substantially.
+
+\paragraph{Interpretation.}
+If patch calibration beats fixed radius, then local scale matters. If it does
+not, then the dominant issue may be direction distribution or sparse supervision
+rather than per-patch magnitude.
+
+%----------------------------------------------------------------------
+\subsection{Experiment 4: Anchor-Gap Radius Sweep}
+
+\paragraph{Script.}
+\begin{lstlisting}[language=bash]
+bash experiments/run_04_anchor_radius_sweep.sh
+\end{lstlisting}
+
+\paragraph{Default sweep.}
+\begin{lstlisting}[language=bash]
+RADII="0.25 0.5 1 2"
+\end{lstlisting}
+
+\paragraph{Configuration.}
+\begin{lstlisting}[language=bash]
+TSLRG_ANOMALY_MODE=anchored
+TSLRG_RADIUS_MODE=anchor
+TSLRG_PATCH_MASK_MODE=all
+TSLRG_REFINE_STEPS=0
+\end{lstlisting}
+
+\paragraph{What it tests.}
+The radius depends on how close the real anchor already is to the fitted
+threshold, following the same high-level principle as distance-guided anomaly
+synthesis in CRAS~\cite{cras}:
+\begin{equation}
+  r_{i,p}
+  =
+  \rho\,
+  \max\left(
+    \sqrt{T_p} - \sqrt{s(\mathbf{x}_{i,p})},
+    0.05\sqrt{T_p}
+  \right)
+  U(0,1),
+\end{equation}
+where $s(\cdot)$ is the fitted Mahalanobis squared score.
+
+\paragraph{Reasoning.}
+Not all normal anchors are equally central. A feature already near the edge of
+the normal distribution should require a smaller shift to become a useful
+near-boundary negative. A very central feature can tolerate a larger shift.
+
+\paragraph{Expected behavior.}
+This should create more uniformly hard negatives: not trivially fake, but not
+identical to normal features. It is the most direct test of the ``near-boundary
+negative'' hypothesis.
+
+\paragraph{Interpretation.}
+If anchor-gap radius improves localization, the project has evidence that
+negative sample difficulty matters. If it only improves image AUROC, sparse
+patch supervision may still be needed.
+
+%----------------------------------------------------------------------
+\subsection{Experiment 5: Sparse Random Patch Sweep}
+
+\paragraph{Script.}
+\begin{lstlisting}[language=bash]
+bash experiments/run_05_sparse_random_sweep.sh
+\end{lstlisting}
+
+\paragraph{Default sweep.}
+\begin{lstlisting}[language=bash]
+RATIOS="0.02 0.05 0.10 0.20"
+\end{lstlisting}
+
+\paragraph{Configuration.}
+\begin{lstlisting}[language=bash]
+TSLRG_ANOMALY_MODE=anchored
+TSLRG_RADIUS_MODE=anchor
+TSLRG_RADIUS=1
+TSLRG_PATCH_MASK_MODE=random
+\end{lstlisting}
+
+\paragraph{What it tests.}
+Only a random subset of patches is synthetic. Unselected patches are kept equal
+to their real anchors, and the fake loss is applied only to selected patches.
+
+\paragraph{Reasoning.}
+Real industrial defects are usually sparse. Image-level synthetic anomaly methods
+such as CutPaste~\cite{cutpaste}, NSA~\cite{nsa}, DRAEM~\cite{draem}, and
+DeSTSeg~\cite{destseg} motivate using localized synthetic supervision. If every
+patch in every fake image is
+synthetic, the discriminator may learn image-level distribution shifts rather
+than local defect evidence. Random sparse masks force the discriminator to
+distinguish local deviations in the context of mostly normal features.
+
+\paragraph{Expected behavior.}
+Sparse random patches may improve pixel AUROC and PRO. Very small ratios may
+under-train the fake class; very large ratios approach the all-fake setting.
+
+\paragraph{Interpretation.}
+If sparse random masks improve localization, the previous bottleneck was not
+only feature magnitude; it was also the spatial training signal. If image AUROC
+drops sharply, the fake signal may be too rare and needs a ratio curriculum.
+
+%----------------------------------------------------------------------
+\subsection{Experiment 6: Sparse Block Patch Sweep}
+
+\paragraph{Script.}
+\begin{lstlisting}[language=bash]
+bash experiments/run_06_sparse_block_sweep.sh
+\end{lstlisting}
+
+\paragraph{Default sweep.}
+\begin{lstlisting}[language=bash]
+BLOCKS="3 5 7 9"
+\end{lstlisting}
+
+\paragraph{Configuration.}
+\begin{lstlisting}[language=bash]
+TSLRG_ANOMALY_MODE=anchored
+TSLRG_RADIUS_MODE=anchor
+TSLRG_RADIUS=1
+TSLRG_PATCH_MASK_MODE=block
+TSLRG_PATCH_MASK_RATIO=0.10
+\end{lstlisting}
+
+\paragraph{What it tests.}
+Synthetic patches are selected in connected spatial blocks rather than
+independent random positions.
+
+\paragraph{Reasoning.}
+Many defects have spatial continuity: scratches, stains, dents, missing material,
+or texture corruption. Block masks are a crude feature-space analogue of
+image-level synthetic anomaly masks. They may give a localization head a more
+realistic spatial pattern than independent random patch corruption.
+
+\paragraph{Expected behavior.}
+Moderate block sizes should improve region-level metrics. Too-small blocks may
+look like random isolated noise; too-large blocks may again become global
+distribution shifts.
+
+\paragraph{Interpretation.}
+If block masks outperform random masks, spatial coherence is useful. If random
+masks outperform blocks, real defects may be more local or the block sizes may be
+too large for the chosen class.
+
+%----------------------------------------------------------------------
+\subsection{Experiment 7: Gradient-Guided PCA Refinement}
+
+\paragraph{Script.}
+\begin{lstlisting}[language=bash]
+bash experiments/run_07_gradient_refinement_sweep.sh
+\end{lstlisting}
+
+\paragraph{Default sweep.}
+\begin{lstlisting}[language=bash]
+REFINE_STEPS_LIST="1 2 3"
+REFINE_STEP_SIZES="0.02 0.05 0.1"
+\end{lstlisting}
+
+\paragraph{Configuration.}
+\begin{lstlisting}[language=bash]
+TSLRG_ANOMALY_MODE=anchored
+TSLRG_RADIUS_MODE=anchor
+TSLRG_RADIUS=1
+TSLRG_PATCH_MASK_MODE=block
+TSLRG_PATCH_MASK_RATIO=0.10
+TSLRG_PATCH_MASK_BLOCK=5
+\end{lstlisting}
+
+\paragraph{What it tests.}
+The generated fake features are refined using discriminator gradients before
+the main discriminator update. The update is projected back into the fitted
+patch PCA subspace and clamped by a Mahalanobis radius.
+
+\paragraph{Reasoning.}
+This experiment is motivated most directly by GLASS~\cite{glass}. Randomly
+sampled negatives may be too easy or may miss the current decision
+boundary. Gradient refinement converts the generator into a hard-negative
+sampler: it searches for feature perturbations that the current discriminator
+should learn to reject, while still respecting the local PCA geometry.
+
+\paragraph{Expected behavior.}
+One or two refinement steps may improve both image and pixel metrics by tightening
+the decision boundary. Too many steps or too-large step sizes may create
+adversarial artifacts that no longer resemble plausible defects.
+
+\paragraph{Interpretation.}
+If refinement helps, then the generator benefits from discriminator feedback.
+If it hurts, the refinement may be producing adversarial directions that are
+useful for fooling the discriminator but not aligned with real anomalies. The
+next step would be to log before/after discriminator scores and feature norms.
+
+%======================================================================
+\section{Ablation Table Template}
+%======================================================================
+
+\begin{center}
+\begin{tabular}{llllll}
+\toprule
+Experiment & Anchor & Radius & Mask & Refinement & Purpose \\
+\midrule
+0 & real & isotropic $\sigma$ & all & no & SimpleNet baseline \\
+1 & real & threshold & all & no & previous anchored setup \\
+2 & real & fixed & all & no & magnitude decoupling \\
+3 & real & patch-calibrated & all & no & local scale calibration \\
+4 & real & anchor-gap & all & no & near-boundary negatives \\
+5 & real & anchor-gap & random & no & sparse local supervision \\
+6 & real & anchor-gap & block & no & coherent local supervision \\
+7 & real & anchor-gap & block & yes & hard negatives \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+%======================================================================
+\section{How to Interpret Outcomes}
+%======================================================================
+
+\subsection{Image AUROC Improves, Pixel Metrics Do Not}
+
+The discriminator has learned image-level evidence, but the fake samples are not
+teaching precise spatial localization. Prefer sparse masks, block masks, and
+smaller or anchor-calibrated radii.
+
+\subsection{Pixel Metrics Improve, Image AUROC Drops}
+
+The synthetic signal may be too subtle or too sparse for robust image-level
+ranking. Increase mask ratio, increase radius, or use a curriculum from stronger
+to subtler anomalies.
+
+\subsection{Training \code{p\_fake} Is High, Test Metrics Are Weak}
+
+The fake anomalies are too easy or unrealistic. The discriminator is solving the
+synthetic task rather than learning real-defect evidence. Reduce radius, use
+anchor-gap calibration, or inspect PCA/residual energy.
+
+\subsection{Gradient Refinement Hurts}
+
+The refinement may be generating adversarial artifacts rather than plausible
+defects. Reduce \code{TSLRG\_REFINE\_STEP\_SIZE}, reduce
+\code{TSLRG\_REFINE\_STEPS}, or set \code{TSLRG\_REFINE\_MAX\_RADIUS}.
+
+\subsection{Sparse Blocks Beat Sparse Random Masks}
+
+Spatial coherence matters. This supports adding richer feature-space masks, such
+as lines, ellipses, texture-like blobs, or masks copied from image-level anomaly
+synthesis methods.
+
+%======================================================================
+\section{Recommended Execution Order}
+%======================================================================
+
+\begin{enumerate}[leftmargin=*]
+  \item Run Experiment 0 and Experiment 1 on the same class. This establishes the
+  vanilla-noise vs anchored-PCA comparison.
+
+  \item Run Experiment 2, then the patch and anchor radius sweeps. Stop early if
+  one radius family is clearly unstable.
+
+  \item Take the best radius setting into sparse random and sparse block sweeps.
+
+  \item Run gradient refinement only after a good sparse-mask configuration is
+  found. Refinement is more expensive and easier to misread without a stable
+  non-refined baseline.
+
+  \item Repeat the winning configuration across additional classes.
+\end{enumerate}
+
+\noindent
+For a quick smoke run:
+
+\begin{lstlisting}[language=bash]
+CLASSNAME=screw META_EPOCHS=1 GAN_EPOCHS=1 \
+  bash experiments/run_01_anchored_threshold.sh
+\end{lstlisting}
+
+\noindent
+For the full single-class suite:
+
+\begin{lstlisting}[language=bash]
+CLASSNAME=screw bash experiments/run_all_proposed_experiments.sh
+\end{lstlisting}
+
+%======================================================================
+\section{Presentation Summary}
+%======================================================================
+
+\begin{itemize}[leftmargin=*]
+  \item The baseline asks whether random feature noise is enough.
+  \item Anchored PCA asks whether feature directions should follow the normal
+  data manifold.
+  \item Radius sweeps ask how close synthetic negatives should be to the normal
+  boundary.
+  \item Sparse masks ask whether localization requires local fake supervision.
+  \item Gradient refinement asks whether the generator should adapt to the
+  current discriminator.
+\end{itemize}
+
+\noindent
+The strongest possible result would show a monotonic story: random noise
+$\rightarrow$ anchored PCA improves image detection; calibrated radius improves
+localization; sparse block masks improve PRO; gradient refinement improves the
+hardest classes without destabilizing training.
+
+\begin{thebibliography}{9}
+
+\bibitem{simplenet}
+Zhikang Liu, Yiming Zhou, Yuansheng Xu, and Zilei Wang.
+\newblock SimpleNet: A Simple Network for Image Anomaly Detection and
+Localization.
+\newblock \emph{CVPR}, 2023.
+\newblock \url{https://arxiv.org/abs/2303.15140}
+
+\bibitem{padim}
+Thomas Defard, Aleksandr Setkov, Angelique Loesch, and Romaric Audigier.
+\newblock PaDiM: a Patch Distribution Modeling Framework for Anomaly Detection
+and Localization.
+\newblock \emph{ICPR}, 2021.
+\newblock \url{https://arxiv.org/abs/2011.08785}
+
+\bibitem{patchcore}
+Karsten Roth, Latha Pemula, Joaquin Zepeda, Bernhard Schölkopf, Thomas Brox,
+and Peter Gehler.
+\newblock Towards Total Recall in Industrial Anomaly Detection.
+\newblock \emph{CVPR}, 2022.
+\newblock \url{https://arxiv.org/abs/2106.08265}
+
+\bibitem{cutpaste}
+Chun-Liang Li, Kihyuk Sohn, Jinsung Yoon, and Tomas Pfister.
+\newblock CutPaste: Self-Supervised Learning for Anomaly Detection and
+Localization.
+\newblock \emph{CVPR}, 2021.
+\newblock \url{https://arxiv.org/abs/2104.04015}
+
+\bibitem{nsa}
+Hannah M. Schl\"uter, Jeremy Tan, Benjamin Hou, and Bernhard Kainz.
+\newblock Natural Synthetic Anomalies for Self-Supervised Anomaly Detection and
+Localization.
+\newblock \emph{ECCV}, 2022.
+\newblock \url{https://arxiv.org/abs/2109.15222}
+
+\bibitem{draem}
+Vitjan Zavrtanik, Matej Kristan, and Danijel Sko\v{c}aj.
+\newblock DRAEM: A Discriminatively Trained Reconstruction Embedding for Surface
+Anomaly Detection.
+\newblock \emph{ICCV}, 2021.
+\newblock \url{https://arxiv.org/abs/2108.07610}
+
+\bibitem{destseg}
+Xuan Zhang, Shiyu Li, Xi Li, Ping Huang, Jiulong Shan, and Ting Chen.
+\newblock DeSTSeg: Segmentation Guided Denoising Student-Teacher for Anomaly
+Detection.
+\newblock \emph{CVPR}, 2023.
+\newblock \url{https://arxiv.org/abs/2211.11317}
+
+\bibitem{glass}
+Qiyu Chen, Huiyuan Luo, Chengkan Lv, and Zhengtao Zhang.
+\newblock A Unified Anomaly Synthesis Strategy with Gradient Ascent for
+Industrial Anomaly Detection and Localization.
+\newblock arXiv, 2024.
+\newblock \url{https://arxiv.org/abs/2407.09359}
+
+\bibitem{cras}
+Qiyu Chen, Huiyuan Luo, Haiming Yao, Wei Luo, Zhen Qu, Chengkan Lv, and
+Zhengtao Zhang.
+\newblock Center-aware Residual Anomaly Synthesis for Multi-class Industrial
+Anomaly Detection.
+\newblock arXiv, 2025.
+\newblock \url{https://arxiv.org/abs/2505.17551}
+
+\end{thebibliography}
+
+\end{document}

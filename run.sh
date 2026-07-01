@@ -32,8 +32,9 @@ net \
 --noise_std "${NOISE_STD:-0.015}" \
 --dsc_hidden 1024 \
 --dsc_layers 2 \
---dsc_margin .5 \
---pre_proj 1 \
+--dsc_margin "${DSC_MARGIN:-0.5}" \
+--pre_proj "${PRE_PROJ:-1}" \
+--mix_noise "${MIX_NOISE:-1}" \
 dataset \
 --batch_size "${BATCH_SIZE:-8}" \
 --resize 329 \
