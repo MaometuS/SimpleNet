@@ -1,5 +1,12 @@
 __pycache__/*
-results/*
+# Track run summary CSVs, but keep trained model checkpoints out of git.
+results/**/models/**
+results/**/*.ckpt
+results/**/*.pt
+results/**/*.pth
+!results/**/
+!results/**/result.csv
+!results/**/results.csv
 variance_mlp/*
 variance_mlp_old/*
 datasets/__pycache__/*
