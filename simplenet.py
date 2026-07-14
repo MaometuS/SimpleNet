@@ -212,6 +212,9 @@ class SimpleNet(torch.nn.Module):
         # "default": PDF formulation (full-sphere). "subspace": in-U_k only.
         # "anchored": real-normal anchor + in-U_k shift. Override via env var.
         self.tslrg_anomaly_mode = os.environ.get("TSLRG_ANOMALY_MODE", "default")
+        # Anchored anomalies are always constructed in the original embedding
+        # space and then pre-projected together with their real anchors.  This
+        # switch controls projection of the non-anchored TSLRG modes only.
         self.tslrg_project_fake_feats = os.environ.get(
             "TSLRG_PROJECT_FAKE_FEATS", "0"
         ).strip().lower() in ("1", "true", "yes", "on")
@@ -628,7 +631,14 @@ class SimpleNet(torch.nn.Module):
         )
         return base + projected
 
-    def _refine_fake_features(self, true_feats, fake_feats, patch_mask):
+    def _refine_fake_features(
+        self,
+        true_feats,
+        fake_feats,
+        patch_mask,
+        project_for_discriminator=False,
+    ):
+        """Refine candidates while keeping TSLRG geometry in anchor space."""
         if self.tslrg_refine_steps <= 0:
             return fake_feats
 
@@ -643,7 +653,10 @@ class SimpleNet(torch.nn.Module):
 
         for _ in range(self.tslrg_refine_steps):
             x = x.detach().requires_grad_(True)
-            flat_scores = self.discriminator(x.reshape(B * P, C)).reshape(B, P)
+            discriminator_input = x.reshape(B * P, C)
+            if project_for_discriminator:
+                discriminator_input = self.pre_projection(discriminator_input)
+            flat_scores = self.discriminator(discriminator_input).reshape(B, P)
             objective = flat_scores[patch_mask].mean()
             grad = torch.autograd.grad(objective, x, only_inputs=True)[0]
             grad, _ = self._project_delta_to_tslrg_subspace(grad)
@@ -655,7 +668,7 @@ class SimpleNet(torch.nn.Module):
         return x.detach()
 
     def _maybe_project_tslrg_fake_features(self, fake_feats):
-        """Apply the trainable pre-projection to generated TSLRG features."""
+        """Optionally pre-project non-anchored generated TSLRG features."""
         if not self.tslrg_project_fake_feats:
             return fake_feats
 
@@ -689,10 +702,13 @@ class SimpleNet(torch.nn.Module):
                     i_iter += 1
                     img = data_item["image"]
                     img = img.to(torch.float).to(self.device)
+                    unprojected_true_feats = self._embed(
+                        img, evaluation=False
+                    )[0]
                     if self.pre_proj > 0:
-                        true_feats = self.pre_projection(self._embed(img, evaluation=False)[0])
+                        true_feats = self.pre_projection(unprojected_true_feats)
                     else:
-                        true_feats = self._embed(img, evaluation=False)[0]
+                        true_feats = unprojected_true_feats
 
                     #generate anomalous features
 
@@ -735,7 +751,9 @@ class SimpleNet(torch.nn.Module):
                     if self.tslrg_anomaly_mode in ("simplenet_noise", "noise"):
                         patch_mask = torch.ones(B, P, dtype=torch.bool, device=true_feats.device)
                         noise_idxs = torch.randint(
-                            0, self.mix_noise, torch.Size([true_feats.shape[0]]),
+                            0,
+                            self.mix_noise,
+                            torch.Size([unprojected_true_feats.shape[0]]),
                             device=self.device,
                         )
                         noise_one_hot = torch.nn.functional.one_hot(
@@ -745,32 +763,39 @@ class SimpleNet(torch.nn.Module):
                             torch.normal(
                                 0,
                                 self.noise_std * 1.1**k,
-                                true_feats.shape,
+                                unprojected_true_feats.shape,
                                 device=self.device,
                             )
                             for k in range(self.mix_noise)
                         ], dim=1)
                         noise = (noise * noise_one_hot.unsqueeze(-1)).sum(1)
-                        fake_feats = true_feats + noise
+                        fake_feats = unprojected_true_feats + noise
+                        if self.pre_proj > 0:
+                            fake_feats = self.pre_projection(fake_feats)
                     elif self.tslrg_anomaly_mode == "anchored":
                         patch_mask = self._sample_patch_mask(B, P, true_feats.device)
-                        true_feats_bpc = true_feats.detach().reshape(B, P, C)
-                        anchors = true_feats.detach().reshape(B, P, C)
+                        anchors = unprojected_true_feats.detach().reshape(B, P, C)
                         fake_feats = self.tslrg.generate_anomalies(
                             B, mode="anchored", anchors=anchors,
                             radius=self.tslrg_radius,
                             radius_mode=self.tslrg_radius_mode,
                             device=self.device,
                         )
-                        fake_feats = self._maybe_project_tslrg_fake_features(fake_feats)
                         fake_feats = torch.where(
                             patch_mask.unsqueeze(-1),
                             fake_feats.to(self.device),
-                            true_feats_bpc,
+                            anchors,
                         )
                         fake_feats = self._refine_fake_features(
-                            true_feats_bpc, fake_feats, patch_mask
+                            anchors,
+                            fake_feats,
+                            patch_mask,
+                            project_for_discriminator=self.pre_proj > 0,
                         )
+                        if self.pre_proj > 0:
+                            fake_feats = self.pre_projection(
+                                fake_feats.reshape(B * P, C)
+                            ).reshape(B, P, C)
                         fake_feats = fake_feats.reshape(true_feats.shape)
                     else:
                         patch_mask = self._sample_patch_mask(B, P, true_feats.device)
