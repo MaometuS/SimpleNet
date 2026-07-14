@@ -212,6 +212,13 @@ class SimpleNet(torch.nn.Module):
         # "default": PDF formulation (full-sphere). "subspace": in-U_k only.
         # "anchored": real-normal anchor + in-U_k shift. Override via env var.
         self.tslrg_anomaly_mode = os.environ.get("TSLRG_ANOMALY_MODE", "default")
+        self.tslrg_project_fake_feats = os.environ.get(
+            "TSLRG_PROJECT_FAKE_FEATS", "0"
+        ).strip().lower() in ("1", "true", "yes", "on")
+        if self.tslrg_project_fake_feats and self.pre_proj <= 0:
+            raise ValueError(
+                "TSLRG_PROJECT_FAKE_FEATS requires --pre_proj to be greater than 0"
+            )
         # Optional explicit Mahalanobis radius. If set, overrides the T_p-based
         # default. Use a small value (e.g., 0.5–2) to mimic SimpleNet's noise scale.
         _r = os.environ.get("TSLRG_RADIUS")
@@ -623,7 +630,7 @@ class SimpleNet(torch.nn.Module):
 
     def _refine_fake_features(self, true_feats, fake_feats, patch_mask):
         if self.tslrg_refine_steps <= 0:
-            return fake_feats.detach()
+            return fake_feats
 
         B, P, C = fake_feats.shape
         base = true_feats.detach()
@@ -646,6 +653,14 @@ class SimpleNet(torch.nn.Module):
             x = torch.where(patch_mask.unsqueeze(-1), x, base)
 
         return x.detach()
+
+    def _maybe_project_tslrg_fake_features(self, fake_feats):
+        """Apply the trainable pre-projection to generated TSLRG features."""
+        if not self.tslrg_project_fake_feats:
+            return fake_feats
+
+        B, P, C = fake_feats.shape
+        return self.pre_projection(fake_feats.reshape(B * P, C)).reshape(B, P, C)
 
     def _train_discriminator(self, input_data, current_meta_epoch=1):
         """Computes and sets the support features for SPADE."""
@@ -685,14 +700,6 @@ class SimpleNet(torch.nn.Module):
                     # with torch.no_grad():
                         # predicted_var = self.variance_mlp(debatched_true_feats)
                         # std = torch.clamp(torch.sqrt(predicted_var + 1e-6), max=10.0)
-                        # noise1 = torch.randn_like(debatched_true_feats) * std * 0.005
-                        # noise2 = torch.randn_like(debatched_true_feats) * std * 0.01
-                        # noise3 = torch.randn_like(debatched_true_feats) * std * 0.025
-                        # noise4 = torch.randn_like(debatched_true_feats) * std * 0.05
-                        # noise5 = torch.randn_like(debatched_true_feats) * std * 0.1
-
-                        # predicted_var = self.variance_mlp(debatched_true_feats)
-                        # std = torch.clamp(torch.sqrt(predicted_var + 1e-6), max=10.0)
                         # noise = torch.randn_like(debatched_true_feats) * std * 1.1
                         # feat_mean = debatched_true_feats.mean(dim=1, keepdim=True)
                         # direction = debatched_true_feats - feat_mean
@@ -713,26 +720,12 @@ class SimpleNet(torch.nn.Module):
                         # noise = noise * dir_std
                         # noise = noise.detach()
 
-                    # fake_feats1 = (debatched_true_feats + noise1.detach()).reshape(true_feats.shape)
-                    # fake_feats2 = (debatched_true_feats + noise2.detach()).reshape(true_feats.shape)
-                    # fake_feats3 = (debatched_true_feats + noise3.detach()).reshape(true_feats.shape)
-                    # fake_feats4 = (debatched_true_feats + noise4.detach()).reshape(true_feats.shape)
-                    # fake_feats5 = (debatched_true_feats + noise5.detach()).reshape(true_feats.shape)
-
-                    # fake_feats = torch.cat((fake_feats1, fake_feats2, fake_feats3, fake_feats4, fake_feats5), dim=0)
-                    # idx = torch.randperm(fake_feats.shape[0])
-                    # fake_feats = fake_feats[idx[:true_feats.shape[0]]]
-
                     # noise_idxs = torch.randint(0, self.mix_noise, torch.Size([true_feats.shape[0]]))
                     # noise_one_hot = torch.nn.functional.one_hot(noise_idxs, num_classes=self.mix_noise).to(self.device) # (N, K)
                     # old_noise = torch.stack([
                     #     torch.normal(0, self.noise_std * 1.1**(k), true_feats.shape)
                     #     for k in range(self.mix_noise)], dim=1).to(self.device) # (N, K, C)
                     # old_noise = (old_noise * noise_one_hot.unsqueeze(-1)).sum(1)
-
-                    # print("My noise: ", noise.mean())
-                    # print("Old noise: ", old_noise.mean())
-                    # print("Noise diff: ", noise.mean()-old_noise.mean())
 
                     # fake_feats = true_feats + old_noise
 
@@ -769,6 +762,7 @@ class SimpleNet(torch.nn.Module):
                             radius_mode=self.tslrg_radius_mode,
                             device=self.device,
                         )
+                        fake_feats = self._maybe_project_tslrg_fake_features(fake_feats)
                         fake_feats = torch.where(
                             patch_mask.unsqueeze(-1),
                             fake_feats.to(self.device),
@@ -787,6 +781,7 @@ class SimpleNet(torch.nn.Module):
                             radius_mode=self.tslrg_radius_mode,
                             device=self.device,
                         )
+                        fake_feats = self._maybe_project_tslrg_fake_features(fake_feats)
                         fake_feats = torch.where(
                             patch_mask.unsqueeze(-1),
                             fake_feats.to(self.device),
