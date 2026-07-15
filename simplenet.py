@@ -224,6 +224,9 @@ class SimpleNet(torch.nn.Module):
             )
         # Optional explicit Mahalanobis radius. If set, overrides the T_p-based
         # default. Use a small value (e.g., 0.5–2) to mimic SimpleNet's noise scale.
+        self.tslrg_delta = float(os.environ.get("TSLRG_DELTA", "1"))
+        if not math.isfinite(self.tslrg_delta) or self.tslrg_delta < 0:
+            raise ValueError("TSLRG_DELTA must be a finite, non-negative number")
         _r = os.environ.get("TSLRG_RADIUS")
         self.tslrg_radius = float(_r) if _r else None
         self.tslrg_radius_mode = os.environ.get("TSLRG_RADIUS_MODE", "threshold")
@@ -776,7 +779,8 @@ class SimpleNet(torch.nn.Module):
                         patch_mask = self._sample_patch_mask(B, P, true_feats.device)
                         anchors = unprojected_true_feats.detach().reshape(B, P, C)
                         fake_feats = self.tslrg.generate_anomalies(
-                            B, mode="anchored", anchors=anchors,
+                            B, delta=self.tslrg_delta,
+                            mode="anchored", anchors=anchors,
                             radius=self.tslrg_radius,
                             radius_mode=self.tslrg_radius_mode,
                             device=self.device,
@@ -801,7 +805,8 @@ class SimpleNet(torch.nn.Module):
                         patch_mask = self._sample_patch_mask(B, P, true_feats.device)
                         true_feats_bpc = true_feats.detach().reshape(B, P, C)
                         fake_feats = self.tslrg.generate_anomalies(
-                            B, mode=self.tslrg_anomaly_mode,
+                            B, delta=self.tslrg_delta,
+                            mode=self.tslrg_anomaly_mode,
                             radius=self.tslrg_radius,
                             radius_mode=self.tslrg_radius_mode,
                             device=self.device,
