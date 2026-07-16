@@ -227,6 +227,20 @@ class SimpleNet(torch.nn.Module):
         self.tslrg_delta = float(os.environ.get("TSLRG_DELTA", "1"))
         if not math.isfinite(self.tslrg_delta) or self.tslrg_delta < 0:
             raise ValueError("TSLRG_DELTA must be a finite, non-negative number")
+        _q = os.environ.get("TSLRG_QUANTILE")
+        self.tslrg_quantile = float(_q) if _q is not None else None
+        if self.tslrg_quantile is not None and (
+            not math.isfinite(self.tslrg_quantile)
+            or not 0 < self.tslrg_quantile < 1
+        ):
+            raise ValueError("TSLRG_QUANTILE must be strictly between 0 and 1")
+        _expected_k = os.environ.get("TSLRG_EXPECTED_K")
+        self.tslrg_expected_k = int(_expected_k) if _expected_k is not None else None
+        if self.tslrg_expected_k is not None and self.tslrg_expected_k < 1:
+            raise ValueError("TSLRG_EXPECTED_K must be >= 1")
+        self.tslrg_checkpoint_dir = os.environ.get(
+            "TSLRG_CHECKPOINT_DIR", "true_spatial_low_rank_gaussian"
+        )
         _r = os.environ.get("TSLRG_RADIUS")
         self.tslrg_radius = float(_r) if _r else None
         self.tslrg_radius_mode = os.environ.get("TSLRG_RADIUS_MODE", "threshold")
@@ -268,9 +282,29 @@ class SimpleNet(torch.nn.Module):
         ).to(self.device)
 
     def load_true_spatial_low_rank_gaussian(self, dataset_name):
-        ckpt = torch.load(f"true_spatial_low_rank_gaussian/{dataset_name}.pt")
+        checkpoint_path = os.path.join(
+            self.tslrg_checkpoint_dir, f"{dataset_name}.pt"
+        )
+        ckpt = torch.load(checkpoint_path)
         self.tslrg = TrueSpatialLowRankGaussian()
         self.tslrg.load_state_dict(ckpt)
+        if (
+            self.tslrg_expected_k is not None
+            and self.tslrg.requested_k != self.tslrg_expected_k
+        ):
+            raise ValueError(
+                f"TSLRG checkpoint requested k={self.tslrg.requested_k}, "
+                f"expected k={self.tslrg_expected_k}. Regenerate the checkpoint."
+            )
+        if self.tslrg_quantile is not None:
+            self.tslrg.set_quantile(self.tslrg_quantile)
+        LOGGER.info(
+            "Loaded TSLRG from %s with requested k=%d, effective k=%d, and quantile=%g",
+            checkpoint_path,
+            self.tslrg.requested_k,
+            self.tslrg.U.shape[-1],
+            self.tslrg.quantile,
+        )
 
     def set_model_dir(self, model_dir, dataset_name):
         self.model_dir = model_dir

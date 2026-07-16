@@ -26,7 +26,7 @@ class TrueSpatialLowRankGaussian():
         x_{i,p} ~ N(mu_p, Sigma_p)
 
     Sigma_p = U_p Lambda_p U_p^T + eps_p I
-    T_p = quantile of Mahalanobis at patch p
+    T_p = runtime-selectable quantile of Mahalanobis at patch p
 
     With neighborhood w > 1, Sigma_p is estimated by pooling centered features
     from a w x w window around p (truncated at the grid edge). Means and
@@ -34,9 +34,12 @@ class TrueSpatialLowRankGaussian():
     which makes the rank-k+isotropic estimator far better-conditioned.
     """
 
-    def __init__(self, k=256, quantile=0.99, neighborhood=1, eps_method="ppca"):
-        self.k = k
-        self.quantile = quantile
+    def __init__(self, k=512, quantile=0.99, neighborhood=1, eps_method="ppca"):
+        self.requested_k = int(k)
+        if self.requested_k < 1:
+            raise ValueError("k must be >= 1")
+        self.k = self.requested_k
+        self.quantile = self._validate_quantile(quantile)
         self.neighborhood = int(neighborhood)
         if self.neighborhood < 1:
             raise ValueError("neighborhood must be >= 1")
@@ -50,7 +53,42 @@ class TrueSpatialLowRankGaussian():
         self.Lambda = None        # (P, k)
         self.eps = None           # (P,)
         self.T = None             # (P,)
+        self.sorted_calibration_scores = None  # (P, N)
         self.spatial_shape = None # (H, W)
+
+    @staticmethod
+    def _validate_quantile(quantile):
+        quantile = float(quantile)
+        if not math.isfinite(quantile) or not 0 < quantile < 1:
+            raise ValueError("quantile must be a finite number strictly between 0 and 1")
+        return quantile
+
+    def set_quantile(self, quantile):
+        """Update T_p from saved calibration scores without refitting covariance."""
+        quantile = self._validate_quantile(quantile)
+
+        if self.sorted_calibration_scores is None:
+            if self.T is not None and math.isclose(
+                quantile, self.quantile, rel_tol=0, abs_tol=1e-12
+            ):
+                return self.T
+            raise RuntimeError(
+                "This legacy TSLRG checkpoint stores only its fitted quantile. "
+                "Regenerate it once to enable runtime quantile selection."
+            )
+
+        sample_count = self.sorted_calibration_scores.shape[1]
+        position = quantile * (sample_count - 1)
+        lower = int(math.floor(position))
+        upper = int(math.ceil(position))
+        weight = position - lower
+        self.T = torch.lerp(
+            self.sorted_calibration_scores[:, lower],
+            self.sorted_calibration_scores[:, upper],
+            weight,
+        )
+        self.quantile = quantile
+        return self.T
 
     # --------------------------------------------------
     # FIT
@@ -91,7 +129,7 @@ class TrueSpatialLowRankGaussian():
         else:
             Xc_pad = Xc
 
-        U_list, Lambda_list, eps_list, T_list = [], [], [], []
+        U_list, Lambda_list, eps_list, score_list = [], [], [], []
 
         for i in range(H):
             for j in range(W):
@@ -105,7 +143,7 @@ class TrueSpatialLowRankGaussian():
                 k_eff = min(self.k, r)
 
                 V_k = Vh[:k_eff].T
-                Lambda_k = eigvals[:k_eff]
+                Lambda_k = eigvals[:k_eff].clamp_min(1e-12)
 
                 if k_eff < r:
                     if self.eps_method == "ppca":
@@ -114,6 +152,7 @@ class TrueSpatialLowRankGaussian():
                         eps_p = 0.5 * torch.median(eigvals[k_eff:])
                 else:
                     eps_p = torch.tensor(1e-2, device=X.device)
+                eps_p = eps_p.clamp_min(1e-12)
 
                 # Threshold is computed from the patch's OWN samples under (V_k, Lambda_k, eps_p)
                 d = Xc[:, i, j, :]  # (N, C), already centered by mu_p
@@ -122,18 +161,19 @@ class TrueSpatialLowRankGaussian():
                 residual = d - proj @ V_k.T
                 term2 = (residual ** 2).sum(dim=1) / eps_p
                 scores_p = term1 + term2
-                T_p = torch.quantile(scores_p, self.quantile)
 
                 U_list.append(V_k)
                 Lambda_list.append(Lambda_k)
                 eps_list.append(eps_p)
-                T_list.append(T_p)
+                score_list.append(torch.sort(scores_p).values)
 
         self.mu = mu
         self.U = torch.stack(U_list, dim=0)
         self.Lambda = torch.stack(Lambda_list, dim=0)
         self.eps = torch.stack(eps_list, dim=0)
-        self.T = torch.stack(T_list, dim=0)
+        self.k = self.U.shape[-1]
+        self.sorted_calibration_scores = torch.stack(score_list, dim=0)
+        self.set_quantile(self.quantile)
         self.spatial_shape = (H, W)
 
     # --------------------------------------------------
@@ -338,7 +378,9 @@ class TrueSpatialLowRankGaussian():
 
     def state_dict(self):
         return {
+            "checkpoint_version": 2,
             "k": self.k,
+            "requested_k": self.requested_k,
             "quantile": self.quantile,
             "neighborhood": self.neighborhood,
             "spatial_shape": self.spatial_shape,
@@ -348,10 +390,12 @@ class TrueSpatialLowRankGaussian():
             "Lambda": self.Lambda,
             "eps": self.eps,
             "T": self.T,
+            "sorted_calibration_scores": self.sorted_calibration_scores,
         }
 
     def load_state_dict(self, state):
         self.k = state["k"]
+        self.requested_k = state.get("requested_k", self.k)
         self.quantile = state["quantile"]
         self.neighborhood = state.get("neighborhood", 1)
         self.spatial_shape = state.get("spatial_shape", None)
@@ -361,6 +405,7 @@ class TrueSpatialLowRankGaussian():
         self.Lambda = state["Lambda"]
         self.eps = state["eps"]
         self.T = state["T"]
+        self.sorted_calibration_scores = state.get("sorted_calibration_scores")
 
 class SpatialLowRankGaussian(nn.Module):
     def __init__(self, mu_p = torch.zeros(1), Uk = torch.zeros(1, 1), lambdak = torch.zeros(1), eps = 0, T = 0):
@@ -477,6 +522,15 @@ class LowRankGaussian(nn.Module):
 @click.option("--neighborhood", type=int, default=1, show_default=True,
               help="Window size for tied-covariance pooling. 1=per-patch (current), "
                    "3 or 5 share covariance with spatial neighbors.")
+@click.option("--k", type=click.IntRange(min=1), default=512, show_default=True,
+              help="Requested covariance rank; the fitted rank is capped by sample count.")
+@click.option("--quantile", type=click.FloatRange(0, 1, min_open=True, max_open=True),
+              default=0.99, show_default=True,
+              help="Initial threshold quantile saved in the checkpoint.")
+@click.option("--checkpoint_dir", type=click.Path(file_okay=False), default=None,
+              help="Output directory. Defaults to a separate runtime-quantile/k directory.")
+@click.option("--overwrite", is_flag=True,
+              help="Explicitly allow replacing checkpoints in the output directory.")
 def main(**kwargs):
     pass
 
@@ -717,10 +771,35 @@ def run(
         test,
         gpu,
         neighborhood,
+        k,
+        quantile,
+        checkpoint_dir,
+        overwrite,
 ):
     methods = {key: item for (key, item) in methods}
 
     list_of_dataloaders = methods["get_dataloaders"](seed)
+
+    if checkpoint_dir is None:
+        checkpoint_dir = os.path.join(
+            "true_spatial_low_rank_gaussian",
+            f"runtime_quantiles_v2_k{k}",
+        )
+    checkpoint_paths = {
+        dataloaders["training"].name: os.path.join(
+            checkpoint_dir, f'{dataloaders["training"].name}.pt'
+        )
+        for dataloaders in list_of_dataloaders
+    }
+    existing_paths = [
+        path for path in checkpoint_paths.values() if os.path.exists(path)
+    ]
+    if existing_paths and not overwrite:
+        raise FileExistsError(
+            "Refusing to replace existing TSLRG checkpoint(s): {}. "
+            "Choose another --checkpoint_dir or pass --overwrite explicitly."
+            .format(", ".join(existing_paths))
+        )
 
     device = utils.set_torch_device(gpu)
 
@@ -743,10 +822,25 @@ def run(
 
         all_patches = torch.cat(all_patches, dim=0)
 
-        tslrg = TrueSpatialLowRankGaussian(neighborhood=neighborhood)
+        tslrg = TrueSpatialLowRankGaussian(
+            k=k,
+            quantile=quantile,
+            neighborhood=neighborhood,
+        )
         tslrg.fit(all_patches)
-        os.makedirs("true_spatial_low_rank_gaussian", exist_ok=True)
-        torch.save(tslrg.state_dict(), f"true_spatial_low_rank_gaussian/{dataset_name}.pt")
+        LOGGER.info(
+            "Fitted TSLRG for %s with requested k=%d, effective k=%d, "
+            "quantile=%g, and %d calibration samples per patch",
+            dataset_name,
+            tslrg.requested_k,
+            tslrg.k,
+            tslrg.quantile,
+            tslrg.sorted_calibration_scores.shape[1],
+        )
+        os.makedirs(checkpoint_dir, exist_ok=True)
+        checkpoint_path = checkpoint_paths[dataset_name]
+        torch.save(tslrg.state_dict(), checkpoint_path)
+        LOGGER.info("Saved TSLRG checkpoint to %s", checkpoint_path)
 
         # lrg = LowRankGaussian.fit(all_patches.to(device))
         # torch.save(lrg.state_dict(), f"low_rank_gaussian/{dataset_name}.pt")
