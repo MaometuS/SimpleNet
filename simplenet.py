@@ -212,6 +212,19 @@ class SimpleNet(torch.nn.Module):
         # "default": PDF formulation (full-sphere). "subspace": in-U_k only.
         # "anchored": real-normal anchor + in-U_k shift. Override via env var.
         self.tslrg_anomaly_mode = os.environ.get("TSLRG_ANOMALY_MODE", "default")
+        # Where "simplenet_noise"/"noise" mode injects the Gaussian noise.
+        # "projected" reproduces upstream SimpleNet: fake = proj(x) + eps, so
+        # the discriminator sees calibrated isotropic noise. "preprojected"
+        # keeps the post-2026-07-15 behaviour: fake = proj(x + eps), where the
+        # trainable projection reshapes the noise (anisotropic, non-stationary).
+        self.tslrg_noise_space = os.environ.get(
+            "TSLRG_NOISE_SPACE", "projected"
+        ).strip().lower()
+        if self.tslrg_noise_space not in ("projected", "preprojected"):
+            raise ValueError(
+                "TSLRG_NOISE_SPACE must be 'projected' or 'preprojected', "
+                f"got {self.tslrg_noise_space!r}"
+            )
         # Anchored anomalies are always constructed in the original embedding
         # space and then pre-projected together with their real anchors.  This
         # switch controls projection of the non-anchored TSLRG modes only.
@@ -806,9 +819,14 @@ class SimpleNet(torch.nn.Module):
                             for k in range(self.mix_noise)
                         ], dim=1)
                         noise = (noise * noise_one_hot.unsqueeze(-1)).sum(1)
-                        fake_feats = unprojected_true_feats + noise
-                        if self.pre_proj > 0:
-                            fake_feats = self.pre_projection(fake_feats)
+                        if self.tslrg_noise_space == "projected":
+                            # Upstream SimpleNet: perturb directly in the
+                            # discriminator's input space.
+                            fake_feats = true_feats + noise
+                        else:
+                            fake_feats = unprojected_true_feats + noise
+                            if self.pre_proj > 0:
+                                fake_feats = self.pre_projection(fake_feats)
                     elif self.tslrg_anomaly_mode == "anchored":
                         patch_mask = self._sample_patch_mask(B, P, true_feats.device)
                         anchors = unprojected_true_feats.detach().reshape(B, P, C)
